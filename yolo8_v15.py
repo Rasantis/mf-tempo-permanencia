@@ -67,13 +67,16 @@ def init_db(db_path):
                       codigocliente INTEGER,
                       vehicle_code INTEGER,
                       timestamp TEXT,
-                      tempo_permanencia FLOAT)''')
+                      tempo_permanencia FLOAT,
+                      enviado INTEGER DEFAULT 0)''')
     
-    # **Adicionar coluna 'codigocliente' se não existir**
+    # **Adicionar colunas se não existirem**
     cursor.execute('''PRAGMA table_info(vehicle_permanence)''')
     columns = [column[1] for column in cursor.fetchall()]
     if 'codigocliente' not in columns:
         cursor.execute('''ALTER TABLE vehicle_permanence ADD COLUMN codigocliente INTEGER''')
+    if 'enviado' not in columns:
+        cursor.execute('''ALTER TABLE vehicle_permanence ADD COLUMN enviado INTEGER DEFAULT 0''')
     
     conn.commit()
     return conn, cursor
@@ -475,8 +478,8 @@ while True:
                         vehicle_code = vehicle_codes[area_name].get(track_id, None)
 
                         # Salvar no banco de dados usando `codigocliente` e o `vehicle_code` correto
-                        cursor.execute('''INSERT INTO vehicle_permanence (codigocliente, vehicle_code, timestamp, tempo_permanencia)
-                                        VALUES (?, ?, ?, ?)''', (client_code, vehicle_code, ultima_vez_visto.strftime('%Y-%m-%d %H:%M:%S'), tempo_permanencia))
+                        cursor.execute('''INSERT INTO vehicle_permanence (codigocliente, vehicle_code, timestamp, tempo_permanencia, enviado)
+                                        VALUES (?, ?, ?, ?, 0)''', (client_code, vehicle_code, ultima_vez_visto.strftime('%Y-%m-%d %H:%M:%S'), tempo_permanencia))
                         conn.commit()
 
                         # Log de permanência

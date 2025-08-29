@@ -46,7 +46,8 @@ class PermanenceTracker:
                                 area TEXT,
                                 vehicle_code INTEGER,
                                 timestamp TEXT,
-                                tempo_permanencia FLOAT)''')
+                                tempo_permanencia FLOAT,
+                                enviado INTEGER DEFAULT 0)''')
         self.conn.commit()
 
         # Verifica se a coluna 'area' existe e a adiciona se necessário
@@ -56,6 +57,12 @@ class PermanenceTracker:
             self.cursor.execute("ALTER TABLE vehicle_permanence ADD COLUMN area TEXT")
             self.conn.commit()
             logger.info("Coluna 'area' adicionada à tabela 'vehicle_permanence'.")
+        
+        # Verifica se a coluna 'enviado' existe e a adiciona se necessário
+        if 'enviado' not in columns:
+            self.cursor.execute("ALTER TABLE vehicle_permanence ADD COLUMN enviado INTEGER DEFAULT 0")
+            self.conn.commit()
+            logger.info("Coluna 'enviado' adicionada à tabela 'vehicle_permanence'.")
 
     def calculate_permanence(self, tracks, current_timestamp):
         """
@@ -171,8 +178,8 @@ class PermanenceTracker:
             vehicle_code = self.permanence_data[area_name]['vehicle_codes'].get(track_id, -1)
 
             self.cursor.execute(
-                '''INSERT INTO vehicle_permanence (codigocliente, area, vehicle_code, timestamp, tempo_permanencia)
-                   VALUES (?, ?, ?, ?, ?)''',
+                '''INSERT INTO vehicle_permanence (codigocliente, area, vehicle_code, timestamp, tempo_permanencia, enviado)
+                   VALUES (?, ?, ?, ?, ?, 0)''',
                 (self.client_code, area_name, vehicle_code, last_seen.strftime('%Y-%m-%d %H:%M:%S'), tempo_permanencia)
             )
             self.conn.commit()

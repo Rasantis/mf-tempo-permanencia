@@ -96,13 +96,16 @@ def init_db(db_path):
                       codigocliente INTEGER,
                       vehicle_code INTEGER,
                       timestamp TEXT,
-                      tempo_permanencia FLOAT)''')
+                      tempo_permanencia FLOAT,
+                      enviado INTEGER DEFAULT 0)''')
     
-    # **Adicionar coluna 'codigocliente' se não existir**
+    # **Adicionar colunas se não existirem**
     cursor.execute('''PRAGMA table_info(vehicle_permanence)''')
     columns = [column[1] for column in cursor.fetchall()]
     if 'codigocliente' not in columns:
         cursor.execute('''ALTER TABLE vehicle_permanence ADD COLUMN codigocliente INTEGER''')
+    if 'enviado' not in columns:
+        cursor.execute('''ALTER TABLE vehicle_permanence ADD COLUMN enviado INTEGER DEFAULT 0''')
     
     conn.commit()
     return conn, cursor
@@ -471,8 +474,8 @@ while True:
                         try:
                             cursor.execute(
                                 '''INSERT INTO vehicle_permanence 
-                                (codigocliente, area, vehicle_code, timestamp, tempo_permanencia)
-                                VALUES (?, ?, ?, ?, ?)''',
+                                (codigocliente, area, vehicle_code, timestamp, tempo_permanencia, enviado)
+                                VALUES (?, ?, ?, ?, ?, 0)''',
                                 (client_code, area_detectada, vehicle_code, current_timestamp.strftime('%Y-%m-%d %H:%M:%S'), tempo)
                             )
                             conn.commit()
