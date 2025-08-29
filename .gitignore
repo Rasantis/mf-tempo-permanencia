@@ -1,0 +1,58 @@
+# Logs
+*.log
+
+# Arquivos temporários
+*.tmp
+*.swp
+*.bak
+*.DS_Store
+Thumbs.db
+
+# Ambientes virtuais / dependências
+.venv/
+env/
+venv/
+node_modules/
+
+# Arquivos de build
+dist/
+build/
+*.egg-info/
+
+# Arquivos binários comuns
+*.zip
+*.tar
+*.tar.gz
+*.rar
+*.7z
+*.exe
+*.dll
+*.so
+*.dylib
+*.class
+*.jar
+*.war
+*.apk
+*.ipa
+*.deb
+*.rpm
+*.msi
+
+# Imagens e mídia grandes
+*.mp4
+*.mov
+*.avi
+*.mkv
+*.flac
+*.wav
+*.iso
+*.img
+
+# Checkpoints e pesos de modelos
+*.pt
+*.pth
+*.ckpt
+*.weights
+*.onnx
+*.h5
+*.pb
