@@ -83,7 +83,8 @@ def init_db(db_path):
                       vehicle_code INTEGER,
                       count_in INTEGER,
                       count_out INTEGER,
-                      timestamp TEXT)''')
+                      timestamp TEXT,
+                      tempo_permanencia FLOAT)''')
 
     # Criar tabela para exportação de log
     cursor.execute('''CREATE TABLE IF NOT EXISTS export_log (
@@ -106,6 +107,12 @@ def init_db(db_path):
         cursor.execute('''ALTER TABLE vehicle_permanence ADD COLUMN codigocliente INTEGER''')
     if 'enviado' not in columns:
         cursor.execute('''ALTER TABLE vehicle_permanence ADD COLUMN enviado INTEGER DEFAULT 0''')
+    
+    # Adicionar coluna tempo_permanencia se não existir
+    cursor.execute('''PRAGMA table_info(vehicle_counts)''')
+    columns_vc = [column[1] for column in cursor.fetchall()]
+    if 'tempo_permanencia' not in columns_vc:
+        cursor.execute('''ALTER TABLE vehicle_counts ADD COLUMN tempo_permanencia FLOAT''')
     
     conn.commit()
     return conn, cursor
@@ -156,8 +163,8 @@ def save_counts_to_db(area_counts, cursor, conn, previous_counts, config, im0):
 
             if previous_counts.get(area, {}).get(vehicle_code, {}).get('in', 0) < count_in:
                 for _ in range(count_in - previous_counts.get(area, {}).get(vehicle_code, {}).get('in', 0)):
-                    cursor.execute('''INSERT INTO vehicle_counts (area, vehicle_code, count_in, count_out, timestamp)
-                                      VALUES (?, ?, 1, 0, ?)''', 
+                    cursor.execute('''INSERT INTO vehicle_counts (area, vehicle_code, count_in, count_out, timestamp, tempo_permanencia)
+                                      VALUES (?, ?, 1, 0, ?, NULL)''', 
                                       (area, vehicle_code, current_time))
                     conn.commit()
                     logger.info(f"Contagem salva: Área {area}, Veículo {vehicle_code}, Entrada 1, Saída 0 em {current_time}")
@@ -168,8 +175,8 @@ def save_counts_to_db(area_counts, cursor, conn, previous_counts, config, im0):
 
             if previous_counts.get(area, {}).get(vehicle_code, {}).get('out', 0) < count_out:
                 for _ in range(count_out - previous_counts.get(area, {}).get(vehicle_code, {}).get('out', 0)):
-                    cursor.execute('''INSERT INTO vehicle_counts (area, vehicle_code, count_in, count_out, timestamp)
-                                      VALUES (?, ?, 0, 1, ?)''', 
+                    cursor.execute('''INSERT INTO vehicle_counts (area, vehicle_code, count_in, count_out, timestamp, tempo_permanencia)
+                                      VALUES (?, ?, 0, 1, ?, NULL)''', 
                                       (area, vehicle_code, current_time))
                     conn.commit()
                     logger.info(f"Evento de saída salvo para veículo de código {vehicle_code} na área {area}")
@@ -483,6 +490,20 @@ while True:
                         except sqlite3.Error as e:
                             bug_logger.error(f"⚠️ Erro ao registrar tempo de permanência no banco para {track_id}: {e}")
                             
+                    # 🚗 Salvar tempo de permanência na vehicle_counts também quando o veículo sair
+                    if tracker.has_vehicle_left(track_id, area_detectada):
+                        vehicle_code = get_vehicle_code(area_detectada, class_name, config)
+                        try:
+                            cursor.execute(
+                                '''INSERT INTO vehicle_counts (area, vehicle_code, count_in, count_out, timestamp, tempo_permanencia)
+                                VALUES (?, ?, 0, 0, ?, ?)''',
+                                (area_detectada, vehicle_code, current_timestamp.strftime('%Y-%m-%d %H:%M:%S'), tempo)
+                            )
+                            conn.commit()
+                            bug_logger.info(f"✅ Tempo de permanência salvo em vehicle_counts -> Veículo {track_id} ({class_name}) na {area_detectada}: {tempo:.2f}s (Código: {vehicle_code})")
+                        except sqlite3.Error as e:
+                            bug_logger.error(f"⚠️ Erro ao registrar tempo de permanência em vehicle_counts para {track_id}: {e}")
+
                     # Desenhar o rótulo e a bounding box no frame
                     annotator.box_label((x1, y1, x2, y2), label)
 
