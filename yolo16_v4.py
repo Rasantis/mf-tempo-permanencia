@@ -132,6 +132,43 @@ def safe_execute(cursor, query, params=(), max_retries=5, delay=0.5):
                 raise
     raise sqlite3.OperationalError('database is locked (após múltiplas tentativas)')
 
+def get_average_area_time(cursor, area):
+    """
+    Retorna o tempo médio de permanência de uma área baseado nos registros recentes.
+    """
+    try:
+        # Buscar tempos dos últimos 50 veículos na área (últimas 24 horas)
+        cursor.execute('''SELECT AVG(tempo_permanencia) FROM vehicle_permanence 
+                          WHERE area = ? 
+                          AND datetime(timestamp) >= datetime('now', '-24 hours')
+                          AND tempo_permanencia > 1 AND tempo_permanencia < 300 
+                          ORDER BY id DESC LIMIT 50''', (area,))
+        
+        result = cursor.fetchone()
+        if result and result[0] is not None:
+            tempo_medio = round(float(result[0]), 2)
+            bug_logger.info(f"OK - Tempo medio da {area}: {tempo_medio}s")
+            return tempo_medio
+        else:
+            # Se não encontrou dados na área, usar média geral
+            cursor.execute('''SELECT AVG(tempo_permanencia) FROM vehicle_permanence 
+                              WHERE datetime(timestamp) >= datetime('now', '-24 hours')
+                              AND tempo_permanencia > 1 AND tempo_permanencia < 300 
+                              LIMIT 100''')
+            
+            fallback = cursor.fetchone()
+            if fallback and fallback[0] is not None:
+                tempo_geral = round(float(fallback[0]), 2)
+                bug_logger.info(f"AVISO - Usando tempo medio geral: {tempo_geral}s")
+                return tempo_geral
+            else:
+                bug_logger.warning(f"ERRO - Usando valor padrao de 15s para {area}")
+                return 15.0  # Valor mais realista como padrão
+                
+    except Exception as e:
+        bug_logger.error(f"Erro ao buscar tempo medio: {e}")
+        return 15.0
+
 def get_latest_permanence_time(cursor, area, vehicle_code, current_time):
     """
     Busca o tempo de permanência mais recente para um veículo específico na área.
@@ -259,29 +296,29 @@ def save_counts_to_db(area_counts, cursor, conn, previous_counts, config, im0, t
             count_in = type_counts['in']
             count_out = type_counts['out']
 
-            # ENTRADA: Buscar tempo de permanência também
+            # ENTRADA: Usar tempo médio da área
             if previous_counts.get(area, {}).get(vehicle_code, {}).get('in', 0) < count_in:
                 for _ in range(count_in - previous_counts.get(area, {}).get(vehicle_code, {}).get('in', 0)):
-                    # Buscar tempo de permanência para ENTRADA também
-                    tempo_permanencia = get_latest_permanence_time(cursor, area, vehicle_code, current_time)
+                    # Para entrada, usar tempo médio da área dos últimos registros
+                    tempo_permanencia = get_average_area_time(cursor, area)
                     
                     safe_execute(cursor, '''INSERT INTO vehicle_counts (area, vehicle_code, count_in, count_out, timestamp, tempo_permanencia)
                                       VALUES (?, ?, 1, 0, ?, ?)''', (area, vehicle_code, current_time, tempo_permanencia))
                     
-                    bug_logger.info(f"ENTRADA DETECTADA -> Area: {area}, Codigo: {vehicle_code}, Tempo: {tempo_permanencia}s")
+                    bug_logger.info(f"ENTRADA DETECTADA -> Area: {area}, Codigo: {vehicle_code}, Tempo medio: {tempo_permanencia}s")
                     
                 previous_counts.setdefault(area, {}).setdefault(vehicle_code, {})['in'] = count_in
 
-            # SAÍDA: Buscar tempo de permanência
+            # SAÍDA: Usar tempo médio da área
             if previous_counts.get(area, {}).get(vehicle_code, {}).get('out', 0) < count_out:
                 for _ in range(count_out - previous_counts.get(area, {}).get(vehicle_code, {}).get('out', 0)):
-                    # Buscar tempo de permanência para SAÍDA
-                    tempo_permanencia = get_latest_permanence_time(cursor, area, vehicle_code, current_time)
+                    # Para saída, usar tempo médio da área dos últimos registros
+                    tempo_permanencia = get_average_area_time(cursor, area)
                     
                     safe_execute(cursor, '''INSERT INTO vehicle_counts (area, vehicle_code, count_in, count_out, timestamp, tempo_permanencia)
                                       VALUES (?, ?, 0, 1, ?, ?)''', (area, vehicle_code, current_time, tempo_permanencia))
                     
-                    bug_logger.info(f"SAIDA DETECTADA -> Area: {area}, Codigo: {vehicle_code}, Tempo: {tempo_permanencia}s")
+                    bug_logger.info(f"SAIDA DETECTADA -> Area: {area}, Codigo: {vehicle_code}, Tempo medio: {tempo_permanencia}s")
                     
                 previous_counts.setdefault(area, {}).setdefault(vehicle_code, {})['out'] = count_out
 

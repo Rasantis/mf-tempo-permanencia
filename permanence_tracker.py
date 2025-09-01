@@ -164,7 +164,7 @@ class PermanenceTracker:
 
     def _save_permanence_to_db(self, track_id, area_name, last_seen, tempo_permanencia):
         """
-        Salva o tempo de permanência no banco de dados.
+        Salva o tempo de permanência no banco de dados (vehicle_permanence E vehicle_counts).
 
         :param track_id: ID do veículo rastreado
         :param area_name: Nome da área
@@ -174,16 +174,27 @@ class PermanenceTracker:
         try:
             # Obtem o vehicle_code armazenado no dicionário (ou usa track_id se não existir)
             vehicle_code = self.permanence_data[area_name]['vehicle_codes'].get(track_id, -1)
+            timestamp_str = last_seen.strftime('%Y-%m-%d %H:%M:%S')
 
+            # 1. Salvar na tabela vehicle_permanence (como sempre)
             self.cursor.execute(
                 '''INSERT INTO vehicle_permanence (codigocliente, area, vehicle_code, timestamp, tempo_permanencia, enviado)
                    VALUES (?, ?, ?, ?, ?, 0)''',
-                (self.client_code, area_name, vehicle_code, last_seen.strftime('%Y-%m-%d %H:%M:%S'), tempo_permanencia)
+                (self.client_code, area_name, vehicle_code, timestamp_str, tempo_permanencia)
             )
+            
+            # 2. TAMBÉM SALVAR na tabela vehicle_counts com o tempo correto
+            self.cursor.execute(
+                '''INSERT INTO vehicle_counts (area, vehicle_code, count_in, count_out, timestamp, tempo_permanencia)
+                   VALUES (?, ?, 0, 1, ?, ?)''',
+                (area_name, vehicle_code, timestamp_str, tempo_permanencia)
+            )
+            
             self.conn.commit()
-            logger.info(f"Veículo {track_id} saiu da área {area_name} com tempo de permanência de {tempo_permanencia:.2f}s.")
+            logger.info(f"Veiculo {track_id} saiu da area {area_name} com tempo {tempo_permanencia:.2f}s - SALVO EM AMBAS AS TABELAS!")
+            
         except sqlite3.Error as e:
-            logger.error(f"Erro ao salvar permanência no banco para Track ID={track_id}: {e}")
+            logger.error(f"Erro ao salvar permanencia no banco para Track ID={track_id}: {e}")
 
     def close(self):
         """Fecha a conexão com o banco de dados."""
