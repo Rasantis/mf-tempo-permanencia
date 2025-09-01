@@ -183,12 +183,26 @@ class PermanenceTracker:
                 (self.client_code, area_name, vehicle_code, timestamp_str, tempo_permanencia)
             )
             
-            # 2. TAMBÉM SALVAR na tabela vehicle_counts com o tempo correto
+            # 2. SALVAR na tabela vehicle_counts APENAS se não existir registro similar
+            # Verificar se já existe registro recente (últimos 30 segundos) para evitar duplicação
             self.cursor.execute(
-                '''INSERT INTO vehicle_counts (area, vehicle_code, count_in, count_out, timestamp, tempo_permanencia)
-                   VALUES (?, ?, 0, 1, ?, ?)''',
-                (area_name, vehicle_code, timestamp_str, tempo_permanencia)
+                '''SELECT COUNT(*) FROM vehicle_counts 
+                   WHERE area = ? AND vehicle_code = ? 
+                   AND ABS(julianday(?) - julianday(timestamp)) * 24 * 60 * 60 < 30''',
+                (area_name, vehicle_code, timestamp_str)
             )
+            
+            existing_count = self.cursor.fetchone()[0]
+            if existing_count == 0:
+                # Só inserir se não houver registro similar recente
+                self.cursor.execute(
+                    '''INSERT INTO vehicle_counts (area, vehicle_code, count_in, count_out, timestamp, tempo_permanencia)
+                       VALUES (?, ?, 0, 1, ?, ?)''',
+                    (area_name, vehicle_code, timestamp_str, tempo_permanencia)
+                )
+                logger.info(f"INSERIDO em vehicle_counts: Track {track_id}, Area {area_name}, Tempo {tempo_permanencia:.2f}s")
+            else:
+                logger.info(f"DUPLICACAO EVITADA: Track {track_id} ja tem registro recente em vehicle_counts")
             
             self.conn.commit()
             logger.info(f"Veiculo {track_id} saiu da area {area_name} com tempo {tempo_permanencia:.2f}s - SALVO EM AMBAS AS TABELAS!")
