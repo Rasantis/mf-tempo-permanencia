@@ -148,7 +148,7 @@ def get_latest_permanence_time(cursor, area, vehicle_code, current_time):
         result = cursor.fetchone()
         if result and result[0] is not None:
             tempo = float(result[0])
-            bug_logger.info(f"✅ Tempo encontrado na tabela permanence: {tempo}s para código {vehicle_code} na {area}")
+            bug_logger.info(f"OK - Tempo encontrado na tabela permanence: {tempo}s para codigo {vehicle_code} na {area}")
             return tempo
         else:
             # Se não encontrou, tenta buscar qualquer registro recente da área (fallback)
@@ -160,10 +160,10 @@ def get_latest_permanence_time(cursor, area, vehicle_code, current_time):
             fallback = cursor.fetchone()
             if fallback and fallback[0] is not None:
                 tempo = float(fallback[0])
-                bug_logger.info(f"⚠️ Usando tempo médio como fallback: {tempo}s para {area}")
+                bug_logger.info(f"AVISO - Usando tempo medio como fallback: {tempo}s para {area}")
                 return tempo
             else:
-                bug_logger.warning(f"❌ Nenhum tempo de permanência encontrado para código {vehicle_code} na {area}")
+                bug_logger.warning(f"ERRO - Nenhum tempo de permanencia encontrado para codigo {vehicle_code} na {area}")
                 return 5.0  # Valor padrão de 5 segundos se não encontrar nada
                 
     except Exception as e:
@@ -203,11 +203,11 @@ def update_null_permanence_records(cursor, conn):
                                   WHERE id = ?''', (tempo, record_id))
                 
                 updated_count += 1
-                bug_logger.info(f"🔄 Atualizado registro {record_id}: {tempo}s")
+                bug_logger.info(f"Atualizado registro {record_id}: {tempo}s")
         
         if updated_count > 0:
             conn.commit()
-            bug_logger.info(f"✅ {updated_count} registros atualizados com tempo de permanência!")
+            bug_logger.info(f"OK - {updated_count} registros atualizados com tempo de permanencia!")
         
         return updated_count
         
@@ -268,7 +268,7 @@ def save_counts_to_db(area_counts, cursor, conn, previous_counts, config, im0, t
                     safe_execute(cursor, '''INSERT INTO vehicle_counts (area, vehicle_code, count_in, count_out, timestamp, tempo_permanencia)
                                       VALUES (?, ?, 1, 0, ?, ?)''', (area, vehicle_code, current_time, tempo_permanencia))
                     
-                    bug_logger.info(f"🔥 ENTRADA DETECTADA -> Área: {area}, Código: {vehicle_code}, Tempo: {tempo_permanencia}s")
+                    bug_logger.info(f"ENTRADA DETECTADA -> Area: {area}, Codigo: {vehicle_code}, Tempo: {tempo_permanencia}s")
                     
                 previous_counts.setdefault(area, {}).setdefault(vehicle_code, {})['in'] = count_in
 
@@ -281,7 +281,7 @@ def save_counts_to_db(area_counts, cursor, conn, previous_counts, config, im0, t
                     safe_execute(cursor, '''INSERT INTO vehicle_counts (area, vehicle_code, count_in, count_out, timestamp, tempo_permanencia)
                                       VALUES (?, ?, 0, 1, ?, ?)''', (area, vehicle_code, current_time, tempo_permanencia))
                     
-                    bug_logger.info(f"🔥 SAÍDA DETECTADA -> Área: {area}, Código: {vehicle_code}, Tempo: {tempo_permanencia}s")
+                    bug_logger.info(f"SAIDA DETECTADA -> Area: {area}, Codigo: {vehicle_code}, Tempo: {tempo_permanencia}s")
                     
                 previous_counts.setdefault(area, {}).setdefault(vehicle_code, {})['out'] = count_out
 
@@ -294,10 +294,10 @@ def save_permanence_to_vehicle_counts(cursor, conn, area, vehicle_code, timestam
         safe_execute(cursor, '''INSERT INTO vehicle_counts (area, vehicle_code, count_in, count_out, timestamp, tempo_permanencia)
                           VALUES (?, ?, 0, 1, ?, ?)''', (area, vehicle_code, timestamp, tempo_permanencia))
         conn.commit()
-        bug_logger.info(f"✅ Tempo de permanência salvo em vehicle_counts -> Área: {area}, Código: {vehicle_code}, Tempo: {tempo_permanencia:.2f}s")
+        bug_logger.info(f"OK - Tempo de permanencia salvo em vehicle_counts -> Area: {area}, Codigo: {vehicle_code}, Tempo: {tempo_permanencia:.2f}s")
         return True
     except sqlite3.Error as e:
-        bug_logger.error(f"⚠️ Erro ao salvar tempo de permanência em vehicle_counts: {e}")
+        bug_logger.error(f"ERRO - Erro ao salvar tempo de permanencia em vehicle_counts: {e}")
         return False
 
 def start_new_video_writer(output_width, output_height, effective_fps):
@@ -591,7 +591,7 @@ while True:
                     if tracker.has_vehicle_left(track_id, area_detectada):
                         vehicle_code = get_vehicle_code(area_detectada, class_name, config)
 
-                        bug_logger.info(f"🔍 VEÍCULO SAIU -> Cliente: {client_code}, Área: {area_detectada}, Veículo: {track_id}, Código: {vehicle_code}, Tempo: {tempo:.2f}s")
+                        bug_logger.info(f"VEICULO SAIU -> Cliente: {client_code}, Area: {area_detectada}, Veiculo: {track_id}, Codigo: {vehicle_code}, Tempo: {tempo:.2f}s")
 
                         try:
                             # 1. Salvar na tabela vehicle_permanence (como antes)
@@ -611,10 +611,10 @@ while True:
                             )
                             
                             conn.commit()
-                            bug_logger.info(f"✅ SUCESSO -> Veículo {track_id} ({class_name}) na {area_detectada}: {tempo:.2f}s salvo em AMBAS as tabelas!")
+                            bug_logger.info(f"SUCESSO -> Veiculo {track_id} ({class_name}) na {area_detectada}: {tempo:.2f}s salvo em AMBAS as tabelas!")
                             
                         except sqlite3.Error as e:
-                            bug_logger.error(f"⚠️ ERRO ao salvar tempo de permanência para {track_id}: {e}")
+                            bug_logger.error(f"ERRO ao salvar tempo de permanencia para {track_id}: {e}")
                             
 
                     # Desenhar o rótulo e a bounding box no frame
