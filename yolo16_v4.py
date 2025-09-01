@@ -184,19 +184,9 @@ def save_counts_to_db(area_counts, cursor, conn, previous_counts, config, im0):
 
             if previous_counts.get(area, {}).get(vehicle_code, {}).get('out', 0) < count_out:
                 for _ in range(count_out - previous_counts.get(area, {}).get(vehicle_code, {}).get('out', 0)):
-                    tempo_permanencia = None
-                    # Tentar buscar o tempo de permanência se o objeto tracker for passado como argumento
-                    if 'tracker' in locals() and hasattr(tracker, 'get_permanence_time'):
-                        # Procurar por algum track_id associado a este vehicle_code nesta área
-                        # (A lógica exata depende de como o tracker armazena os dados, mas aqui é um exemplo genérico)
-                        for track_id, vcode in getattr(tracker, 'permanence_data', {}).get(area, {}).get('vehicle_codes', {}).items():
-                            if vcode == vehicle_code:
-                                tempos_permanencia = tracker.get_permanence_time(track_id)
-                                if tempos_permanencia and area in tempos_permanencia:
-                                    tempo_permanencia = tempos_permanencia[area]
-                                    break
+                    # Remover busca e insert de tempo_permanencia aqui
                     safe_execute(cursor, '''INSERT INTO vehicle_counts (area, vehicle_code, count_in, count_out, timestamp, tempo_permanencia)
-                                      VALUES (?, ?, 0, 1, ?, ?)''', (area, vehicle_code, current_time, tempo_permanencia))
+                                      VALUES (?, ?, 0, 1, ?, NULL)''', (area, vehicle_code, current_time))
                 previous_counts.setdefault(area, {}).setdefault(vehicle_code, {})['out'] = count_out
 
 def start_new_video_writer(output_width, output_height, effective_fps):
