@@ -308,7 +308,7 @@ cursor.execute('PRAGMA journal_mode=DELETE;')  # Ativa o modo WAL para gravaçã
 # Variável para armazenar as últimas contagens
 previous_counts = {}
 
-tracker = PermanenceTracker(args.db_path, config['codigocliente'], permanencia_config)
+tracker = PermanenceTracker(cursor, conn, config['codigocliente'], permanencia_config)
 
 # Dicionário para persistência de rótulos dos veículos
 label_persistence = {}

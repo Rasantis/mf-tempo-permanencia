@@ -11,7 +11,7 @@ logging.basicConfig(
 )
 
 class PermanenceTracker:
-    def __init__(self, db_path, client_code, config):
+    def __init__(self, cursor, conn, client_code, config):
         """
         Inicializa o tracker para calcular o tempo de permanência de veículos.
 
@@ -19,7 +19,8 @@ class PermanenceTracker:
         :param client_code: Código do cliente para identificar os registros
         :param config: Configurações das áreas monitoradas
         """
-        self.db_path = db_path
+        self.cursor = cursor
+        self.conn = conn
         self.client_code = client_code
         self.config = config
 
@@ -33,9 +34,6 @@ class PermanenceTracker:
              for area_name in config.keys()
          }
 
-        # Conectar ao banco de dados
-        self.conn = sqlite3.connect(db_path)
-        self.cursor = self.conn.cursor()
         self._initialize_db()
 
     def _initialize_db(self):
