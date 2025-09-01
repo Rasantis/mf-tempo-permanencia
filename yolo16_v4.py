@@ -73,7 +73,7 @@ def load_config(file_path):
     return config
 
 def init_db(db_path):
-    conn = sqlite3.connect(db_path)
+    conn = sqlite3.connect(db_path, timeout=10)  # Adiciona timeout de 10 segundos
     cursor = conn.cursor()
     
     # Criar tabela para contagens de veículos
@@ -116,6 +116,21 @@ def init_db(db_path):
     
     conn.commit()
     return conn, cursor
+
+# Função utilitária para retry em operações de escrita no banco
+import time
+
+def safe_execute(cursor, query, params=(), max_retries=5, delay=0.5):
+    for attempt in range(max_retries):
+        try:
+            cursor.execute(query, params)
+            return True
+        except sqlite3.OperationalError as e:
+            if 'database is locked' in str(e):
+                time.sleep(delay)
+            else:
+                raise
+    raise sqlite3.OperationalError('database is locked (após múltiplas tentativas)')
 
 # Função para verificar se os valores de entrada/saída mudaram em relação ao último salvo
 def has_count_changed(area, vehicle_code, count_in, count_out, cursor):
@@ -163,9 +178,8 @@ def save_counts_to_db(area_counts, cursor, conn, previous_counts, config, im0):
 
             if previous_counts.get(area, {}).get(vehicle_code, {}).get('in', 0) < count_in:
                 for _ in range(count_in - previous_counts.get(area, {}).get(vehicle_code, {}).get('in', 0)):
-                    cursor.execute('''INSERT INTO vehicle_counts (area, vehicle_code, count_in, count_out, timestamp, tempo_permanencia)
-                                      VALUES (?, ?, 1, 0, ?, NULL)''', 
-                                      (area, vehicle_code, current_time))
+                    safe_execute(cursor, '''INSERT INTO vehicle_counts (area, vehicle_code, count_in, count_out, timestamp, tempo_permanencia)
+                                      VALUES (?, ?, 1, 0, ?, NULL)''', (area, vehicle_code, current_time))
                 previous_counts.setdefault(area, {}).setdefault(vehicle_code, {})['in'] = count_in
 
             if previous_counts.get(area, {}).get(vehicle_code, {}).get('out', 0) < count_out:
@@ -181,9 +195,8 @@ def save_counts_to_db(area_counts, cursor, conn, previous_counts, config, im0):
                                 if tempos_permanencia and area in tempos_permanencia:
                                     tempo_permanencia = tempos_permanencia[area]
                                     break
-                    cursor.execute('''INSERT INTO vehicle_counts (area, vehicle_code, count_in, count_out, timestamp, tempo_permanencia)
-                                      VALUES (?, ?, 0, 1, ?, ?)''', 
-                                      (area, vehicle_code, current_time, tempo_permanencia))
+                    safe_execute(cursor, '''INSERT INTO vehicle_counts (area, vehicle_code, count_in, count_out, timestamp, tempo_permanencia)
+                                      VALUES (?, ?, 0, 1, ?, ?)''', (area, vehicle_code, current_time, tempo_permanencia))
                 previous_counts.setdefault(area, {}).setdefault(vehicle_code, {})['out'] = count_out
 
 def start_new_video_writer(output_width, output_height, effective_fps):
@@ -480,7 +493,7 @@ while True:
                         bug_logger.info(f"🔍 Antes da inserção no banco -> Cliente: {client_code}, Área: {area_detectada}, Veículo: {track_id}, Código: {vehicle_code}, Tempo: {tempo:.2f}s")
 
                         try:
-                            cursor.execute(
+                            safe_execute(cursor,
                                 '''INSERT INTO vehicle_permanence 
                                 (codigocliente, area, vehicle_code, timestamp, tempo_permanencia, enviado)
                                 VALUES (?, ?, ?, ?, ?, 0)''',
@@ -495,7 +508,7 @@ while True:
                     if tracker.has_vehicle_left(track_id, area_detectada):
                         vehicle_code = get_vehicle_code(area_detectada, class_name, config)
                         try:
-                            cursor.execute(
+                            safe_execute(cursor,
                                 '''INSERT INTO vehicle_counts (area, vehicle_code, count_in, count_out, timestamp, tempo_permanencia)
                                 VALUES (?, ?, 0, 0, ?, ?)''',
                                 (area_detectada, vehicle_code, current_timestamp.strftime('%Y-%m-%d %H:%M:%S'), tempo)
