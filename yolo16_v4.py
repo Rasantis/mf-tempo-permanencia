@@ -152,7 +152,7 @@ def has_count_changed(area, vehicle_code, count_in, count_out, cursor):
     return False  # Nenhuma mudança
 
 # Função para salvar contagens no banco de dados
-def save_counts_to_db(area_counts, cursor, conn, previous_counts, config, im0):
+def save_counts_to_db(area_counts, cursor, conn, previous_counts, config, im0, tracker):
     current_time = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
 
     # Mapeamento da área para as faixas
@@ -184,10 +184,24 @@ def save_counts_to_db(area_counts, cursor, conn, previous_counts, config, im0):
 
             if previous_counts.get(area, {}).get(vehicle_code, {}).get('out', 0) < count_out:
                 for _ in range(count_out - previous_counts.get(area, {}).get(vehicle_code, {}).get('out', 0)):
-                    # Remover busca e insert de tempo_permanencia aqui
                     safe_execute(cursor, '''INSERT INTO vehicle_counts (area, vehicle_code, count_in, count_out, timestamp, tempo_permanencia)
                                       VALUES (?, ?, 0, 1, ?, NULL)''', (area, vehicle_code, current_time))
                 previous_counts.setdefault(area, {}).setdefault(vehicle_code, {})['out'] = count_out
+
+# Nova função para salvar tempo de permanência na tabela vehicle_counts
+def save_permanence_to_vehicle_counts(cursor, conn, area, vehicle_code, timestamp, tempo_permanencia):
+    """
+    Salva o tempo de permanência diretamente na tabela vehicle_counts quando um veículo sai.
+    """
+    try:
+        safe_execute(cursor, '''INSERT INTO vehicle_counts (area, vehicle_code, count_in, count_out, timestamp, tempo_permanencia)
+                          VALUES (?, ?, 0, 1, ?, ?)''', (area, vehicle_code, timestamp, tempo_permanencia))
+        conn.commit()
+        bug_logger.info(f"✅ Tempo de permanência salvo em vehicle_counts -> Área: {area}, Código: {vehicle_code}, Tempo: {tempo_permanencia:.2f}s")
+        return True
+    except sqlite3.Error as e:
+        bug_logger.error(f"⚠️ Erro ao salvar tempo de permanência em vehicle_counts: {e}")
+        return False
 
 def start_new_video_writer(output_width, output_height, effective_fps):
     timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
@@ -483,30 +497,23 @@ while True:
                         bug_logger.info(f"🔍 Antes da inserção no banco -> Cliente: {client_code}, Área: {area_detectada}, Veículo: {track_id}, Código: {vehicle_code}, Tempo: {tempo:.2f}s")
 
                         try:
+                            # Salvar na tabela vehicle_permanence
                             safe_execute(cursor,
                                 '''INSERT INTO vehicle_permanence 
                                 (codigocliente, area, vehicle_code, timestamp, tempo_permanencia, enviado)
                                 VALUES (?, ?, ?, ?, ?, 0)''',
                                 (client_code, area_detectada, vehicle_code, current_timestamp.strftime('%Y-%m-%d %H:%M:%S'), tempo)
                             )
+                            
+                            # Salvar na tabela vehicle_counts com tempo de permanência
+                            save_permanence_to_vehicle_counts(cursor, conn, area_detectada, vehicle_code, 
+                                                            current_timestamp.strftime('%Y-%m-%d %H:%M:%S'), tempo)
+                            
                             conn.commit()
-                            bug_logger.info(f"✅ Tempo de permanência salvo -> Veículo {track_id} ({class_name}) na {area_detectada}: {tempo:.2f}s (Código: {vehicle_code})")
+                            bug_logger.info(f"✅ Tempo de permanência salvo em ambas as tabelas -> Veículo {track_id} ({class_name}) na {area_detectada}: {tempo:.2f}s (Código: {vehicle_code})")
                         except sqlite3.Error as e:
                             bug_logger.error(f"⚠️ Erro ao registrar tempo de permanência no banco para {track_id}: {e}")
                             
-                    # 🚗 Salvar tempo de permanência na vehicle_counts também quando o veículo sair
-                    if tracker.has_vehicle_left(track_id, area_detectada):
-                        vehicle_code = get_vehicle_code(area_detectada, class_name, config)
-                        try:
-                            safe_execute(cursor,
-                                '''INSERT INTO vehicle_counts (area, vehicle_code, count_in, count_out, timestamp, tempo_permanencia)
-                                VALUES (?, ?, 0, 0, ?, ?)''',
-                                (area_detectada, vehicle_code, current_timestamp.strftime('%Y-%m-%d %H:%M:%S'), tempo)
-                            )
-                            conn.commit()
-                            bug_logger.info(f"✅ Tempo de permanência salvo em vehicle_counts -> Veículo {track_id} ({class_name}) na {area_detectada}: {tempo:.2f}s (Código: {vehicle_code})")
-                        except sqlite3.Error as e:
-                            bug_logger.error(f"⚠️ Erro ao registrar tempo de permanência em vehicle_counts para {track_id}: {e}")
 
                     # Desenhar o rótulo e a bounding box no frame
                     annotator.box_label((x1, y1, x2, y2), label)
@@ -521,7 +528,7 @@ while True:
 
     # Salvamento em tempo real apenas se os valores mudarem
     try:
-        save_counts_to_db(counter.area_counts, cursor, conn, previous_counts, config, im0)
+        save_counts_to_db(counter.area_counts, cursor, conn, previous_counts, config, im0, tracker)
     except Exception as e:
         logger.error(f"Erro ao salvar no banco de dados: {e}")
 
