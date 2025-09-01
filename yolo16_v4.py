@@ -259,17 +259,23 @@ def save_counts_to_db(area_counts, cursor, conn, previous_counts, config, im0, t
             count_in = type_counts['in']
             count_out = type_counts['out']
 
-            # ENTRADA: Salvar como antes
+            # ENTRADA: Buscar tempo de permanência também
             if previous_counts.get(area, {}).get(vehicle_code, {}).get('in', 0) < count_in:
                 for _ in range(count_in - previous_counts.get(area, {}).get(vehicle_code, {}).get('in', 0)):
+                    # Buscar tempo de permanência para ENTRADA também
+                    tempo_permanencia = get_latest_permanence_time(cursor, area, vehicle_code, current_time)
+                    
                     safe_execute(cursor, '''INSERT INTO vehicle_counts (area, vehicle_code, count_in, count_out, timestamp, tempo_permanencia)
-                                      VALUES (?, ?, 1, 0, ?, NULL)''', (area, vehicle_code, current_time))
+                                      VALUES (?, ?, 1, 0, ?, ?)''', (area, vehicle_code, current_time, tempo_permanencia))
+                    
+                    bug_logger.info(f"🔥 ENTRADA DETECTADA -> Área: {area}, Código: {vehicle_code}, Tempo: {tempo_permanencia}s")
+                    
                 previous_counts.setdefault(area, {}).setdefault(vehicle_code, {})['in'] = count_in
 
-            # SAÍDA: Tentar buscar tempo de permanência da tabela vehicle_permanence
+            # SAÍDA: Buscar tempo de permanência
             if previous_counts.get(area, {}).get(vehicle_code, {}).get('out', 0) < count_out:
                 for _ in range(count_out - previous_counts.get(area, {}).get(vehicle_code, {}).get('out', 0)):
-                    # Buscar tempo de permanência mais recente para este vehicle_code e área
+                    # Buscar tempo de permanência para SAÍDA
                     tempo_permanencia = get_latest_permanence_time(cursor, area, vehicle_code, current_time)
                     
                     safe_execute(cursor, '''INSERT INTO vehicle_counts (area, vehicle_code, count_in, count_out, timestamp, tempo_permanencia)
