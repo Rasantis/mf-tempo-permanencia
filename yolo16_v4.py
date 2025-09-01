@@ -132,6 +132,89 @@ def safe_execute(cursor, query, params=(), max_retries=5, delay=0.5):
                 raise
     raise sqlite3.OperationalError('database is locked (após múltiplas tentativas)')
 
+def get_latest_permanence_time(cursor, area, vehicle_code, current_time):
+    """
+    Busca o tempo de permanência mais recente para um veículo específico na área.
+    Retorna o tempo encontrado ou valor padrão se não houver registro recente.
+    """
+    try:
+        # Buscar na tabela vehicle_permanence o registro mais recente para este vehicle_code e área
+        # Considera registros dos últimos 60 segundos para evitar dados muito antigos
+        cursor.execute('''SELECT tempo_permanencia FROM vehicle_permanence 
+                          WHERE area = ? AND vehicle_code = ? 
+                          AND datetime(timestamp) >= datetime(?, '-60 seconds')
+                          ORDER BY id DESC LIMIT 1''', (area, vehicle_code, current_time))
+        
+        result = cursor.fetchone()
+        if result and result[0] is not None:
+            tempo = float(result[0])
+            bug_logger.info(f"✅ Tempo encontrado na tabela permanence: {tempo}s para código {vehicle_code} na {area}")
+            return tempo
+        else:
+            # Se não encontrou, tenta buscar qualquer registro recente da área (fallback)
+            cursor.execute('''SELECT AVG(tempo_permanencia) FROM vehicle_permanence 
+                              WHERE area = ? 
+                              AND datetime(timestamp) >= datetime(?, '-300 seconds')
+                              AND tempo_permanencia > 1''', (area, current_time))
+            
+            fallback = cursor.fetchone()
+            if fallback and fallback[0] is not None:
+                tempo = float(fallback[0])
+                bug_logger.info(f"⚠️ Usando tempo médio como fallback: {tempo}s para {area}")
+                return tempo
+            else:
+                bug_logger.warning(f"❌ Nenhum tempo de permanência encontrado para código {vehicle_code} na {area}")
+                return 5.0  # Valor padrão de 5 segundos se não encontrar nada
+                
+    except Exception as e:
+        bug_logger.error(f"Erro ao buscar tempo de permanência: {e}")
+        return 5.0  # Valor padrão em caso de erro
+
+def update_null_permanence_records(cursor, conn):
+    """
+    Atualiza registros antigos com tempo_permanencia NULL baseado em dados da vehicle_permanence.
+    """
+    try:
+        # Buscar registros de saída com tempo NULL
+        cursor.execute('''SELECT id, area, vehicle_code, timestamp 
+                          FROM vehicle_counts 
+                          WHERE count_out = 1 AND tempo_permanencia IS NULL 
+                          ORDER BY id DESC LIMIT 100''')
+        
+        null_records = cursor.fetchall()
+        updated_count = 0
+        
+        for record in null_records:
+            record_id, area, vehicle_code, timestamp = record
+            
+            # Buscar tempo correspondente na vehicle_permanence
+            cursor.execute('''SELECT tempo_permanencia FROM vehicle_permanence 
+                              WHERE area = ? AND vehicle_code = ? 
+                              AND ABS(julianday(?) - julianday(timestamp)) * 24 * 60 < 10
+                              ORDER BY id DESC LIMIT 1''', (area, vehicle_code, timestamp))
+            
+            permanence_result = cursor.fetchone()
+            if permanence_result and permanence_result[0] is not None:
+                tempo = float(permanence_result[0])
+                
+                # Atualizar o registro
+                cursor.execute('''UPDATE vehicle_counts 
+                                  SET tempo_permanencia = ? 
+                                  WHERE id = ?''', (tempo, record_id))
+                
+                updated_count += 1
+                bug_logger.info(f"🔄 Atualizado registro {record_id}: {tempo}s")
+        
+        if updated_count > 0:
+            conn.commit()
+            bug_logger.info(f"✅ {updated_count} registros atualizados com tempo de permanência!")
+        
+        return updated_count
+        
+    except Exception as e:
+        bug_logger.error(f"Erro ao atualizar registros NULL: {e}")
+        return 0
+
 # Função para verificar se os valores de entrada/saída mudaram em relação ao último salvo
 def has_count_changed(area, vehicle_code, count_in, count_out, cursor):
     query = '''SELECT count_in, count_out FROM vehicle_counts 
@@ -151,7 +234,7 @@ def has_count_changed(area, vehicle_code, count_in, count_out, cursor):
     
     return False  # Nenhuma mudança
 
-# Função para salvar contagens no banco de dados
+# Função para salvar contagens no banco de dados com tempo de permanência
 def save_counts_to_db(area_counts, cursor, conn, previous_counts, config, im0, tracker):
     current_time = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
 
@@ -176,16 +259,24 @@ def save_counts_to_db(area_counts, cursor, conn, previous_counts, config, im0, t
             count_in = type_counts['in']
             count_out = type_counts['out']
 
+            # ENTRADA: Salvar como antes
             if previous_counts.get(area, {}).get(vehicle_code, {}).get('in', 0) < count_in:
                 for _ in range(count_in - previous_counts.get(area, {}).get(vehicle_code, {}).get('in', 0)):
                     safe_execute(cursor, '''INSERT INTO vehicle_counts (area, vehicle_code, count_in, count_out, timestamp, tempo_permanencia)
                                       VALUES (?, ?, 1, 0, ?, NULL)''', (area, vehicle_code, current_time))
                 previous_counts.setdefault(area, {}).setdefault(vehicle_code, {})['in'] = count_in
 
+            # SAÍDA: Tentar buscar tempo de permanência da tabela vehicle_permanence
             if previous_counts.get(area, {}).get(vehicle_code, {}).get('out', 0) < count_out:
                 for _ in range(count_out - previous_counts.get(area, {}).get(vehicle_code, {}).get('out', 0)):
+                    # Buscar tempo de permanência mais recente para este vehicle_code e área
+                    tempo_permanencia = get_latest_permanence_time(cursor, area, vehicle_code, current_time)
+                    
                     safe_execute(cursor, '''INSERT INTO vehicle_counts (area, vehicle_code, count_in, count_out, timestamp, tempo_permanencia)
-                                      VALUES (?, ?, 0, 1, ?, NULL)''', (area, vehicle_code, current_time))
+                                      VALUES (?, ?, 0, 1, ?, ?)''', (area, vehicle_code, current_time, tempo_permanencia))
+                    
+                    bug_logger.info(f"🔥 SAÍDA DETECTADA -> Área: {area}, Código: {vehicle_code}, Tempo: {tempo_permanencia}s")
+                    
                 previous_counts.setdefault(area, {}).setdefault(vehicle_code, {})['out'] = count_out
 
 # Nova função para salvar tempo de permanência na tabela vehicle_counts
@@ -490,14 +581,14 @@ while True:
                         label += f" {area}: {tempo:.1f}s"
 
 
-                    # 🚗 Salvar tempo de permanência apenas quando o veículo sair
+                    # 🚗 Salvar tempo de permanência quando o veículo sair
                     if tracker.has_vehicle_left(track_id, area_detectada):
-                        vehicle_code = get_vehicle_code(area_detectada, class_name, config)  # Pega o código correto
+                        vehicle_code = get_vehicle_code(area_detectada, class_name, config)
 
-                        bug_logger.info(f"🔍 Antes da inserção no banco -> Cliente: {client_code}, Área: {area_detectada}, Veículo: {track_id}, Código: {vehicle_code}, Tempo: {tempo:.2f}s")
+                        bug_logger.info(f"🔍 VEÍCULO SAIU -> Cliente: {client_code}, Área: {area_detectada}, Veículo: {track_id}, Código: {vehicle_code}, Tempo: {tempo:.2f}s")
 
                         try:
-                            # Salvar na tabela vehicle_permanence
+                            # 1. Salvar na tabela vehicle_permanence (como antes)
                             safe_execute(cursor,
                                 '''INSERT INTO vehicle_permanence 
                                 (codigocliente, area, vehicle_code, timestamp, tempo_permanencia, enviado)
@@ -505,14 +596,19 @@ while True:
                                 (client_code, area_detectada, vehicle_code, current_timestamp.strftime('%Y-%m-%d %H:%M:%S'), tempo)
                             )
                             
-                            # Salvar na tabela vehicle_counts com tempo de permanência
-                            save_permanence_to_vehicle_counts(cursor, conn, area_detectada, vehicle_code, 
-                                                            current_timestamp.strftime('%Y-%m-%d %H:%M:%S'), tempo)
+                            # 2. SALVAR DIRETAMENTE na tabela vehicle_counts com tempo de permanência
+                            safe_execute(cursor,
+                                '''INSERT INTO vehicle_counts 
+                                (area, vehicle_code, count_in, count_out, timestamp, tempo_permanencia)
+                                VALUES (?, ?, 0, 1, ?, ?)''',
+                                (area_detectada, vehicle_code, current_timestamp.strftime('%Y-%m-%d %H:%M:%S'), tempo)
+                            )
                             
                             conn.commit()
-                            bug_logger.info(f"✅ Tempo de permanência salvo em ambas as tabelas -> Veículo {track_id} ({class_name}) na {area_detectada}: {tempo:.2f}s (Código: {vehicle_code})")
+                            bug_logger.info(f"✅ SUCESSO -> Veículo {track_id} ({class_name}) na {area_detectada}: {tempo:.2f}s salvo em AMBAS as tabelas!")
+                            
                         except sqlite3.Error as e:
-                            bug_logger.error(f"⚠️ Erro ao registrar tempo de permanência no banco para {track_id}: {e}")
+                            bug_logger.error(f"⚠️ ERRO ao salvar tempo de permanência para {track_id}: {e}")
                             
 
                     # Desenhar o rótulo e a bounding box no frame
@@ -529,6 +625,11 @@ while True:
     # Salvamento em tempo real apenas se os valores mudarem
     try:
         save_counts_to_db(counter.area_counts, cursor, conn, previous_counts, config, im0, tracker)
+        
+        # A cada 100 frames, tenta atualizar registros NULL com dados da vehicle_permanence
+        if frame_count % 100 == 0:
+            update_null_permanence_records(cursor, conn)
+            
     except Exception as e:
         logger.error(f"Erro ao salvar no banco de dados: {e}")
 
