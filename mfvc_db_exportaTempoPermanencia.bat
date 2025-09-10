@@ -7,12 +7,13 @@ rem Data: 2024-08-12 11h00min
 rem ====================================================================================================
 
 rem Parâmetros
-set app_dir=C:\Users\maisfluxo\Desktop\executavel
+set app_dir=C:\Users\maisfluxo\Desktop\mf-permanencia\mf-tempo-permanencia
 set days_keep=120
 title MaisFluxo_PixForce_ExportTempoPermanencia
 cls
 
 rem Execução App
 cd %app_dir%
-python.exe api_tempopermanencia.py --db_path %app_dir%\yolo8.db
+python.exe api_tempopermanencia.py --db_path %app_dir%\teste_tempo_permanencia_com_controle_envio.db
+pause
 exit
