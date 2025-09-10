@@ -85,19 +85,33 @@ def marcar_como_enviado(record_id):
 
 # Formata o tempo de permanência em um json para que seja enviado para a API.
 def enviar_dados(record_id, timestamp, vehicle_code, tempo_permanencia):
-    # CORREÇÃO: Converter timestamp para formato ISO 8601 com timezone
+    # Normaliza timestamp para formato "YYYY-MM-DD HH:MM:SS" (sem 'T' e sem timezone)
+    timestamp_api = timestamp
     try:
-        # Parsear timestamp do banco (formato: "2025-08-28 23:57:51")
-        dt = datetime.datetime.strptime(timestamp, "%Y-%m-%d %H:%M:%S")
-        # Converter para ISO 8601 com timezone local (UTC-3)
-        timestamp_iso = dt.strftime("%Y-%m-%dT%H:%M:%S-03:00")
-    except ValueError:
-        # Fallback: se falhar, tentar formato original
-        logging.warning(f"Erro ao converter timestamp {timestamp}, usando formato original")
-        timestamp_iso = timestamp
-    
+        # Caso venha em ISO (com 'T' e offset), converter mantendo somente até segundos
+        if 'T' in timestamp_api:
+            # Substitui 'T' por espaço e remove qualquer sufixo de timezone
+            ts = timestamp_api.replace('Z', '')
+            ts = ts.split('T', 1)[0] + ' ' + ts.split('T', 1)[1]
+            timestamp_api = ts[:19] if len(ts) >= 19 else ts
+        # Caso tenha offset sem 'T' (raro), truncar após segundos
+        if len(timestamp_api) > 19 and (timestamp_api[19] in ['+', '-']):
+            timestamp_api = timestamp_api[:19]
+        # Validar formato; se não bater, tenta parsear e reformatar
+        try:
+            datetime.datetime.strptime(timestamp_api, "%Y-%m-%d %H:%M:%S")
+        except ValueError:
+            try:
+                dt2 = datetime.datetime.fromisoformat(timestamp)
+                timestamp_api = dt2.strftime("%Y-%m-%d %H:%M:%S")
+            except Exception:
+                # Mantém como veio se não conseguir parsear
+                pass
+    except Exception as e:
+        logging.warning(f"Falha ao normalizar timestamp '{timestamp}': {e}")
+
     dados_envio = {
-        "datetime": timestamp_iso,  # CORREÇÃO: Formato ISO com timezone
+        "datetime": timestamp_api,
         "dwelltime": {
             str(vehicle_code): {
                 "inside": 1,
@@ -107,7 +121,7 @@ def enviar_dados(record_id, timestamp, vehicle_code, tempo_permanencia):
     }
     
     # LOG para debug
-    logging.info(f"Enviando timestamp: '{timestamp}' -> '{timestamp_iso}' para vehicle_code {vehicle_code}")
+    logging.info(f"Enviando timestamp: '{timestamp}' -> '{timestamp_api}' para vehicle_code {vehicle_code}")
 
     try:
         response = requests.post(url, json=dados_envio, auth=HTTPBasicAuth(username, password))
