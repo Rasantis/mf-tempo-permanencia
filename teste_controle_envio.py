@@ -58,7 +58,8 @@ def inserir_dados_teste():
         ('area_1', 26058, 0, 1, '2024-01-15 10:35:00', 22.3, 0),
         ('area_1', 26059, 0, 1, '2024-01-15 10:40:00', 8.7, 0),
         ('area_2', 26057, 0, 1, '2024-01-15 10:45:00', 31.2, 0),
-        ('area_2', 26060, 0, 1, '2024-01-15 10:50:00', 12.9, 0)
+        ('area_2', 26060, 0, 1, '2024-01-15 10:50:00', 12.9, 0),
+        ('area_1', 26057, 1, 0, '2024-01-15 10:55:00', 18.0, 0)
     ]
     
     cursor.executemany(
@@ -74,7 +75,7 @@ def buscar_nao_enviados():
     conn = sqlite3.connect(TEST_DB)
     cursor = conn.cursor()
     
-    query = "SELECT id, timestamp, vehicle_code, tempo_permanencia FROM vehicle_counts WHERE enviado = 0 AND count_out = 1 AND tempo_permanencia IS NOT NULL ORDER BY timestamp"
+    query = "SELECT id, timestamp, vehicle_code, tempo_permanencia FROM vehicle_counts WHERE enviado = 0 AND tempo_permanencia IS NOT NULL ORDER BY timestamp"
     cursor.execute(query)
     rows = cursor.fetchall()
     conn.close()

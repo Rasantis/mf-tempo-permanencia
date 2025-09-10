@@ -58,7 +58,7 @@ def buscar_dados():
     query = (
         "SELECT id, timestamp, vehicle_code, tempo_permanencia "
         "FROM vehicle_counts "
-        "WHERE enviado = 0 AND count_out = 1 AND tempo_permanencia IS NOT NULL "
+        "WHERE enviado = 0 AND tempo_permanencia IS NOT NULL "
         "ORDER BY timestamp"
     )
     cursor.execute(query)
