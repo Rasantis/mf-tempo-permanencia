@@ -10,41 +10,37 @@ O sistema anterior utilizava controle por **data/hora** para determinar quais re
 
 ## SOLUÇÃO IMPLEMENTADA
 
-Implementado controle **por registro individual** usando um campo `enviado` na tabela:
+Implementado controle **por registro individual** usando um campo `enviado` na tabela principal de eventos:
 
 ### 1. ALTERAÇÕES NA ESTRUTURA DO BANCO
 
-**Campo adicionado**: `enviado INTEGER DEFAULT 0`
+**Campo adicionado**: `enviado INTEGER DEFAULT 0` em `vehicle_counts`
 
 - `0` = Registro não enviado
 - `1` = Registro enviado com sucesso
 
 ### 2. ARQUIVOS MODIFICADOS
 
-#### A) Estrutura de Banco (CREATE TABLE)
-- `permanence_tracker.py:43-65` - Adicionado campo e verificação de compatibilidade
-- `yolo16_v4.py:94-108` - Adicionado campo e verificação de compatibilidade  
-- `yolo8_v13.py:65-79` - Adicionado campo e verificação de compatibilidade
-- `yolo8_v15.py:65-79` - Adicionado campo e verificação de compatibilidade
+#### A) Estrutura de Banco (CREATE/ALTER TABLE)
+- `yolo16_v4.py` - Garante colunas `tempo_permanencia` e `enviado` em `vehicle_counts`
+- `permanence_tracker.py` - Garante `enviado` em `vehicle_counts`
 
 #### B) Inserção de Registros (INSERT)
-- `permanence_tracker.py:181-183` - INSERT com `enviado = 0`
-- `yolo16_v4.py:475-479` - INSERT com `enviado = 0`
-- `yolo8_v15.py:481-482` - INSERT com `enviado = 0`
+- `permanence_tracker.py` - INSERT em `vehicle_counts` com `count_out=1`, `tempo_permanencia`, `enviado = 0`
+- Removidos INSERTs em `vehicle_permanence`
 
 #### C) API de Envio
-- `api_tempopermanencia.py` - **REESCRITO COMPLETAMENTE**
-  - Removida lógica de controle por timestamp
-  - Implementada busca por `enviado = 0`
-  - Marcação individual como enviado após sucesso
+- `api_tempopermanencia.py` - Atualizado
+  - Busca em `vehicle_counts` por `enviado = 0`, `count_out=1` e `tempo_permanencia` válido
+  - Marcação individual como enviado em `vehicle_counts`
 
 ### 3. FUNCIONAMENTO ATUAL
 
 #### Fluxo de Dados:
-1. **Geração**: Registros criados com `enviado = 0`
-2. **Busca**: API seleciona apenas `WHERE enviado = 0`
+1. **Geração**: Registros (saída) criados em `vehicle_counts` com `enviado = 0`
+2. **Busca**: API seleciona apenas `WHERE enviado = 0 AND count_out=1 AND tempo_permanencia IS NOT NULL`
 3. **Envio**: Tentativa de envio para cada registro
-4. **Marcação**: Se sucesso, `UPDATE enviado = 1 WHERE id = ?`
+4. **Marcação**: Se sucesso, `UPDATE vehicle_counts SET enviado = 1 WHERE id = ?`
 5. **Reprocessamento**: Próxima execução ignora registros já enviados
 
 #### Vantagens:
@@ -66,10 +62,9 @@ Criado `teste_controle_envio.py` que valida:
 
 ### 5. MIGRAÇÃO
 
-O sistema é **100% compatível** com bancos existentes:
-- Campo `enviado` é adicionado automaticamente se não existir
-- Registros antigos ficam com `enviado = 0` (serão reprocessados)
-- Não há perda de dados
+- Campo `enviado` é adicionado automaticamente em `vehicle_counts` se não existir
+- A tabela `vehicle_permanence` deixa de ser utilizada (não há novos INSERTs)
+- Opcional: para evitar reenvio histórico após migração, alinhar `vehicle_counts.enviado` com sua política atual
 
 ### 6. MONITORAMENTO
 

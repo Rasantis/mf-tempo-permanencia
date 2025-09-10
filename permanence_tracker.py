@@ -37,30 +37,29 @@ class PermanenceTracker:
         self._initialize_db()
 
     def _initialize_db(self):
-        """Cria e verifica a estrutura do banco de dados."""
-        self.cursor.execute('''CREATE TABLE IF NOT EXISTS vehicle_permanence (
-                                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                                codigocliente INTEGER,
-                                area TEXT,
-                                vehicle_code INTEGER,
-                                timestamp TEXT,
-                                tempo_permanencia FLOAT,
-                                enviado INTEGER DEFAULT 0)''')
+        """Garante estrutura necessária na tabela vehicle_counts."""
+        # Criar tabela vehicle_counts caso não exista (estrutura mínima)
+        self.cursor.execute('''CREATE TABLE IF NOT EXISTS vehicle_counts (
+                              id INTEGER PRIMARY KEY AUTOINCREMENT,
+                              area TEXT,
+                              vehicle_code INTEGER,
+                              count_in INTEGER,
+                              count_out INTEGER,
+                              timestamp TEXT,
+                              tempo_permanencia FLOAT)''')
         self.conn.commit()
 
-        # Verifica se a coluna 'area' existe e a adiciona se necessário
-        self.cursor.execute("PRAGMA table_info(vehicle_permanence)")
-        columns = [column[1] for column in self.cursor.fetchall()]
-        if 'area' not in columns:
-            self.cursor.execute("ALTER TABLE vehicle_permanence ADD COLUMN area TEXT")
+        # Garantir colunas necessárias em vehicle_counts
+        self.cursor.execute("PRAGMA table_info(vehicle_counts)")
+        columns_vc = [column[1] for column in self.cursor.fetchall()]
+        if 'tempo_permanencia' not in columns_vc:
+            self.cursor.execute('''ALTER TABLE vehicle_counts ADD COLUMN tempo_permanencia FLOAT''')
             self.conn.commit()
-            logger.info("Coluna 'area' adicionada à tabela 'vehicle_permanence'.")
-        
-        # Verifica se a coluna 'enviado' existe e a adiciona se necessário
-        if 'enviado' not in columns:
-            self.cursor.execute("ALTER TABLE vehicle_permanence ADD COLUMN enviado INTEGER DEFAULT 0")
+            logger.info("Coluna 'tempo_permanencia' adicionada à tabela 'vehicle_counts'.")
+        if 'enviado' not in columns_vc:
+            self.cursor.execute('''ALTER TABLE vehicle_counts ADD COLUMN enviado INTEGER DEFAULT 0''')
             self.conn.commit()
-            logger.info("Coluna 'enviado' adicionada à tabela 'vehicle_permanence'.")
+            logger.info("Coluna 'enviado' adicionada à tabela 'vehicle_counts'.")
 
     def calculate_permanence(self, tracks, current_timestamp):
         """
@@ -176,36 +175,27 @@ class PermanenceTracker:
             vehicle_code = self.permanence_data[area_name]['vehicle_codes'].get(track_id, -1)
             timestamp_str = last_seen.strftime('%Y-%m-%d %H:%M:%S')
 
-            # 1. Salvar na tabela vehicle_permanence (como sempre)
-            self.cursor.execute(
-                '''INSERT INTO vehicle_permanence (codigocliente, area, vehicle_code, timestamp, tempo_permanencia, enviado)
-                   VALUES (?, ?, ?, ?, ?, 0)''',
-                (self.client_code, area_name, vehicle_code, timestamp_str, tempo_permanencia)
-            )
-            
-            # 2. SALVAR na tabela vehicle_counts APENAS se não existir registro similar
-            # Verificar se já existe registro recente (últimos 30 segundos) para evitar duplicação
+            # Salvar na tabela vehicle_counts APENAS se não existir registro similar recente
             self.cursor.execute(
                 '''SELECT COUNT(*) FROM vehicle_counts 
                    WHERE area = ? AND vehicle_code = ? 
                    AND ABS(julianday(?) - julianday(timestamp)) * 24 * 60 * 60 < 30''',
                 (area_name, vehicle_code, timestamp_str)
             )
-            
             existing_count = self.cursor.fetchone()[0]
             if existing_count == 0:
-                # Só inserir se não houver registro similar recente
                 self.cursor.execute(
-                    '''INSERT INTO vehicle_counts (area, vehicle_code, count_in, count_out, timestamp, tempo_permanencia)
-                       VALUES (?, ?, 0, 1, ?, ?)''',
+                    '''INSERT INTO vehicle_counts (area, vehicle_code, count_in, count_out, timestamp, tempo_permanencia, enviado)
+                       VALUES (?, ?, 0, 1, ?, ?, 0)''',
                     (area_name, vehicle_code, timestamp_str, tempo_permanencia)
                 )
-                logger.info(f"INSERIDO em vehicle_counts: Track {track_id}, Area {area_name}, Tempo {tempo_permanencia:.2f}s")
+                logger.info(f"INSERIDO em vehicle_counts: Track {track_id}, Area {area_name}, Tempo {tempo_permanencia:.2f}s (enviado=0)")
             else:
                 logger.info(f"DUPLICACAO EVITADA: Track {track_id} ja tem registro recente em vehicle_counts")
             
             self.conn.commit()
             logger.info(f"Veiculo {track_id} saiu da area {area_name} com tempo {tempo_permanencia:.2f}s - SALVO EM AMBAS AS TABELAS!")
+            logger.info(f"CENARIO: Veiculo pode ter aparecido na area SEM cruzar linha de contagem - tempo registrado independentemente")
             
         except sqlite3.Error as e:
             logger.error(f"Erro ao salvar permanencia no banco para Track ID={track_id}: {e}")

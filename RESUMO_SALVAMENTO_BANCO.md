@@ -2,17 +2,18 @@
 
 ## ✅ STATUS ATUAL - TUDO ATUALIZADO E FUNCIONANDO
 
-### **📊 ESTRUTURA DA TABELA `vehicle_permanence`**
+### **📊 ESTRUTURA ATUAL (USO OFICIAL: `vehicle_counts`)**
 
 ```sql
-CREATE TABLE vehicle_permanence (
+CREATE TABLE vehicle_counts (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
-    codigocliente INTEGER,              -- Código do cliente (ex: 1724)
-    area TEXT,                         -- Nome da área (ex: "area_1") - NOVO
-    vehicle_code INTEGER,              -- Código do veículo (ex: 26057)
-    timestamp TEXT,                    -- Data/hora do evento
-    tempo_permanencia FLOAT,           -- Tempo em segundos
-    enviado INTEGER DEFAULT 0          -- 0=não enviado, 1=enviado - NOVO
+    area TEXT,
+    vehicle_code INTEGER,
+    count_in INTEGER,
+    count_out INTEGER,
+    timestamp TEXT,
+    tempo_permanencia FLOAT,
+    enviado INTEGER DEFAULT 0   -- 0=não enviado, 1=enviado
 );
 ```
 
@@ -20,18 +21,17 @@ CREATE TABLE vehicle_permanence (
 
 #### **1. Quando um veículo sai da área de permanência:**
 ```sql
-INSERT INTO vehicle_permanence 
-(codigocliente, area, vehicle_code, timestamp, tempo_permanencia, enviado)
-VALUES (1724, 'area_1', 26057, '2024-01-15 14:30:00', 15.5, 0)
+INSERT INTO vehicle_counts (area, vehicle_code, count_in, count_out, timestamp, tempo_permanencia, enviado)
+VALUES ('area_1', 26057, 0, 1, '2024-01-15 14:30:00', 15.5, 0);
 ```
 
 #### **2. Campos salvos:**
-- **`codigocliente`**: 1724 (vem da configuração)
-- **`area`**: "area_1" ou "area_2" (qual área detectou o veículo) 
-- **`vehicle_code`**: 26057 (código correspondente ao tipo de veículo)
-- **`timestamp`**: Data/hora que o veículo saiu da área
+- **`area`**: "area_1" ou "area_2"
+- **`vehicle_code`**: 26057 (mapeado via config)
+- **`timestamp`**: Data/hora de saída
 - **`tempo_permanencia`**: Tempo calculado em segundos (ex: 15.5s)
-- **`enviado`**: 0 (ainda não foi enviado para API)
+- **`count_out`**: 1 (evento de saída)
+- **`enviado`**: 0 (ainda não enviado para API)
 
 ### **📍 ONDE ACONTECE O SALVAMENTO:**
 
@@ -49,42 +49,27 @@ cursor.execute(
 #### **PermanenceTracker: `permanence_tracker.py`**
 ```python
 self.cursor.execute(
-    '''INSERT INTO vehicle_permanence (codigocliente, area, vehicle_code, timestamp, tempo_permanencia, enviado)
-       VALUES (?, ?, ?, ?, ?, 0)''',
-    (self.client_code, area_name, vehicle_code, last_seen.strftime('%Y-%m-%d %H:%M:%S'), tempo_permanencia)
+    '''INSERT INTO vehicle_counts (area, vehicle_code, count_in, count_out, timestamp, tempo_permanencia, enviado)
+       VALUES (?, ?, 0, 1, ?, ?, 0)''',
+    (area_name, vehicle_code, timestamp_str, tempo_permanencia)
 )
 ```
-- **Linha 181-183**: permanence_tracker.py:181-183
 
-#### **Scripts Secundários:**
-- **`yolo8_v15.py`** ✅ Atualizado com campo `enviado`
-- **`yolo8_v13.py`** ✅ Atualizado com campo `enviado` (acabei de corrigir)
+#### **API/Envio:**
+- `api_tempopermanencia.py` agora lê de `vehicle_counts` (com `count_out=1` e `tempo_permanencia` preenchido) e marca `enviado=1` nesta tabela.
 
 ### **🔗 RELACIONAMENTO COM CONTAGEM:**
 
-#### **Tabela `vehicle_counts` (contagem de entrada/saída):**
-```sql
-INSERT INTO vehicle_counts (area, vehicle_code, count_in, count_out, timestamp)
-VALUES ('area_1', 26057, 1, 0, '2024-01-15 14:30:00')
-```
-
-#### **Tabela `vehicle_permanence` (tempo de permanência):**
-```sql
-INSERT INTO vehicle_permanence (codigocliente, area, vehicle_code, timestamp, tempo_permanencia, enviado)
-VALUES (1724, 'area_1', 26057, '2024-01-15 14:30:00', 15.5, 0)
-```
-
-**📋 IMPORTANTE**: São **duas tabelas separadas**:
-- **`vehicle_counts`**: Salva eventos de entrada/saída (imediato)
-- **`vehicle_permanence`**: Salva tempo de permanência (quando veículo sai da área)
+Agora centralizamos em **uma tabela**:
+- **`vehicle_counts`**: registra count_in/out e também o tempo de permanência e status `enviado`.
 
 ### **🚀 FLUXO COMPLETO:**
 
-1. **Veículo entra na área de contagem** → Salva em `vehicle_counts` 
-2. **Veículo permanece na área** → Sistema calcula tempo
-3. **Veículo sai da área** → Salva tempo em `vehicle_permanence` com `enviado = 0`
-4. **API executa** → Busca registros com `enviado = 0`
-5. **Envio bem-sucedido** → Marca `enviado = 1`
+1. Veículo entra → contagem/estado
+2. Veículo permanece → cálculo interno
+3. Veículo sai → salva em `vehicle_counts` com `count_out=1`, `tempo_permanencia`, `enviado=0`
+4. API busca `vehicle_counts.enviado=0`
+5. Sucesso → `vehicle_counts.enviado=1`
 
 ### **🔧 MAPEAMENTO VEHICLE_CODE:**
 
@@ -101,12 +86,7 @@ O `vehicle_code` é mapeado pela configuração:
 }
 ```
 
-### **✅ CONFIRMAÇÃO:**
-
-**TODOS os scripts principais agora salvam corretamente:**
-- ✅ **yolo16_v4.py** (principal) - com `enviado = 0`
-- ✅ **permanence_tracker.py** - com `enviado = 0` 
-- ✅ **yolo8_v15.py** - com `enviado = 0`
-- ✅ **yolo8_v13.py** - com `enviado = 0` (corrigido agora)
-
-**O sistema está 100% integrado e funcionando corretamente!**
+### **✅ CONFIRMAÇÃO (APÓS MIGRAÇÃO):**
+- `yolo16_v4.py` garante `vehicle_counts.enviado`
+- `permanence_tracker.py` salva somente em `vehicle_counts` com `enviado=0`
+- `api_tempopermanencia.py` lê/marca `enviado` em `vehicle_counts`

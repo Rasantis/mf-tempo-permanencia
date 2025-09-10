@@ -91,28 +91,13 @@ def init_db(db_path):
                       id INTEGER PRIMARY KEY AUTOINCREMENT,
                       last_export TEXT)''')
     
-    # Criar tabela para tempos de permanência dos veículos
-    cursor.execute('''CREATE TABLE IF NOT EXISTS vehicle_permanence (
-                      id INTEGER PRIMARY KEY AUTOINCREMENT,
-                      codigocliente INTEGER,
-                      vehicle_code INTEGER,
-                      timestamp TEXT,
-                      tempo_permanencia FLOAT,
-                      enviado INTEGER DEFAULT 0)''')
-    
-    # **Adicionar colunas se não existirem**
-    cursor.execute('''PRAGMA table_info(vehicle_permanence)''')
-    columns = [column[1] for column in cursor.fetchall()]
-    if 'codigocliente' not in columns:
-        cursor.execute('''ALTER TABLE vehicle_permanence ADD COLUMN codigocliente INTEGER''')
-    if 'enviado' not in columns:
-        cursor.execute('''ALTER TABLE vehicle_permanence ADD COLUMN enviado INTEGER DEFAULT 0''')
-    
-    # Adicionar coluna tempo_permanencia se não existir
+    # Garantir colunas na vehicle_counts
     cursor.execute('''PRAGMA table_info(vehicle_counts)''')
     columns_vc = [column[1] for column in cursor.fetchall()]
     if 'tempo_permanencia' not in columns_vc:
         cursor.execute('''ALTER TABLE vehicle_counts ADD COLUMN tempo_permanencia FLOAT''')
+    if 'enviado' not in columns_vc:
+        cursor.execute('''ALTER TABLE vehicle_counts ADD COLUMN enviado INTEGER DEFAULT 0''')
     
     conn.commit()
     return conn, cursor
@@ -135,38 +120,34 @@ def safe_execute(cursor, query, params=(), max_retries=5, delay=0.5):
 def get_average_area_time(cursor, area):
     """
     Retorna o tempo médio de permanência de uma área baseado nos registros recentes.
+    Baseado em vehicle_counts (count_out=1 com tempo_permanencia).
     """
     try:
-        # Buscar tempos dos últimos 50 veículos na área (últimas 24 horas)
-        cursor.execute('''SELECT AVG(tempo_permanencia) FROM vehicle_permanence 
-                          WHERE area = ? 
-                          AND datetime(timestamp) >= datetime('now', '-24 hours')
+        # Média da área nas últimas 24h
+        cursor.execute('''SELECT AVG(tempo_permanencia) FROM vehicle_counts 
+                          WHERE area = ? AND count_out = 1
                           AND tempo_permanencia > 1 AND tempo_permanencia < 300 
-                          ORDER BY id DESC LIMIT 50''', (area,))
-        
+                          AND datetime(timestamp) >= datetime('now', '-24 hours')''', (area,))
         result = cursor.fetchone()
         if result and result[0] is not None:
             tempo_medio = round(float(result[0]), 2)
             bug_logger.info(f"OK - Tempo medio da {area}: {tempo_medio}s")
             return tempo_medio
         else:
-            # Se não encontrou dados na área, usar média geral
-            cursor.execute('''SELECT AVG(tempo_permanencia) FROM vehicle_permanence 
-                              WHERE datetime(timestamp) >= datetime('now', '-24 hours')
-                              AND tempo_permanencia > 1 AND tempo_permanencia < 300 
-                              LIMIT 100''')
-            
+            # fallback: média geral
+            cursor.execute('''SELECT AVG(tempo_permanencia) FROM vehicle_counts 
+                              WHERE count_out = 1 AND tempo_permanencia > 1 AND tempo_permanencia < 300 
+                              AND datetime(timestamp) >= datetime('now', '-24 hours')''')
             fallback = cursor.fetchone()
             if fallback and fallback[0] is not None:
                 tempo_geral = round(float(fallback[0]), 2)
                 bug_logger.info(f"AVISO - Usando tempo medio geral: {tempo_geral}s")
                 return tempo_geral
             else:
-                bug_logger.warning(f"ERRO - Usando valor padrao de 15s para {area}")
-                return 15.0  # Valor mais realista como padrão
-                
+                bug_logger.warning(f"AVISO - Sem dados recentes, usando 15s para {area}")
+                return 15.0
     except Exception as e:
-        bug_logger.error(f"Erro ao buscar tempo medio: {e}")
+        bug_logger.error(f"Erro ao buscar tempo medio (vehicle_counts): {e}")
         return 15.0
 
 def get_latest_permanence_time(cursor, area, vehicle_code, current_time):
@@ -175,10 +156,12 @@ def get_latest_permanence_time(cursor, area, vehicle_code, current_time):
     Retorna o tempo encontrado ou valor padrão se não houver registro recente.
     """
     try:
-        # Buscar na tabela vehicle_permanence o registro mais recente para este vehicle_code e área
-        # Considera registros dos últimos 60 segundos para evitar dados muito antigos
-        cursor.execute('''SELECT tempo_permanencia FROM vehicle_permanence 
+        # Buscar na tabela vehicle_counts o registro de saída mais recente
+        # Considera registros dos últimos 60s com tempo_permanencia
+        cursor.execute('''SELECT tempo_permanencia FROM vehicle_counts 
                           WHERE area = ? AND vehicle_code = ? 
+                          AND count_out = 1
+                          AND tempo_permanencia IS NOT NULL
                           AND datetime(timestamp) >= datetime(?, '-60 seconds')
                           ORDER BY id DESC LIMIT 1''', (area, vehicle_code, current_time))
         
@@ -188,11 +171,10 @@ def get_latest_permanence_time(cursor, area, vehicle_code, current_time):
             bug_logger.info(f"OK - Tempo encontrado na tabela permanence: {tempo}s para codigo {vehicle_code} na {area}")
             return tempo
         else:
-            # Se não encontrou, tenta buscar qualquer registro recente da área (fallback)
-            cursor.execute('''SELECT AVG(tempo_permanencia) FROM vehicle_permanence 
-                              WHERE area = ? 
-                              AND datetime(timestamp) >= datetime(?, '-300 seconds')
-                              AND tempo_permanencia > 1''', (area, current_time))
+            # Se não encontrou, tenta média recente da área na vehicle_counts
+            cursor.execute('''SELECT AVG(tempo_permanencia) FROM vehicle_counts 
+                              WHERE area = ? AND tempo_permanencia > 1
+                              AND datetime(timestamp) >= datetime(?, '-300 seconds')''', (area, current_time))
             
             fallback = cursor.fetchone()
             if fallback and fallback[0] is not None:
@@ -204,53 +186,13 @@ def get_latest_permanence_time(cursor, area, vehicle_code, current_time):
                 return 5.0  # Valor padrão de 5 segundos se não encontrar nada
                 
     except Exception as e:
-        bug_logger.error(f"Erro ao buscar tempo de permanência: {e}")
+        bug_logger.error(f"Erro ao buscar tempo de permanência (vehicle_counts): {e}")
         return 5.0  # Valor padrão em caso de erro
 
 def update_null_permanence_records(cursor, conn):
-    """
-    Atualiza registros antigos com tempo_permanencia NULL baseado em dados da vehicle_permanence.
-    """
-    try:
-        # Buscar registros de saída com tempo NULL
-        cursor.execute('''SELECT id, area, vehicle_code, timestamp 
-                          FROM vehicle_counts 
-                          WHERE count_out = 1 AND tempo_permanencia IS NULL 
-                          ORDER BY id DESC LIMIT 100''')
-        
-        null_records = cursor.fetchall()
-        updated_count = 0
-        
-        for record in null_records:
-            record_id, area, vehicle_code, timestamp = record
-            
-            # Buscar tempo correspondente na vehicle_permanence
-            cursor.execute('''SELECT tempo_permanencia FROM vehicle_permanence 
-                              WHERE area = ? AND vehicle_code = ? 
-                              AND ABS(julianday(?) - julianday(timestamp)) * 24 * 60 < 10
-                              ORDER BY id DESC LIMIT 1''', (area, vehicle_code, timestamp))
-            
-            permanence_result = cursor.fetchone()
-            if permanence_result and permanence_result[0] is not None:
-                tempo = float(permanence_result[0])
-                
-                # Atualizar o registro
-                cursor.execute('''UPDATE vehicle_counts 
-                                  SET tempo_permanencia = ? 
-                                  WHERE id = ?''', (tempo, record_id))
-                
-                updated_count += 1
-                bug_logger.info(f"Atualizado registro {record_id}: {tempo}s")
-        
-        if updated_count > 0:
-            conn.commit()
-            bug_logger.info(f"OK - {updated_count} registros atualizados com tempo de permanencia!")
-        
-        return updated_count
-        
-    except Exception as e:
-        bug_logger.error(f"Erro ao atualizar registros NULL: {e}")
-        return 0
+    """Função desativada: vehicle_permanence descontinuada. Não realiza backfill."""
+    bug_logger.info("update_null_permanence_records desativada (vehicle_permanence descontinuada)")
+    return 0
 
 # Função para verificar se os valores de entrada/saída mudaram em relação ao último salvo
 def has_count_changed(area, vehicle_code, count_in, count_out, cursor):
@@ -299,14 +241,17 @@ def save_counts_to_db(area_counts, cursor, conn, previous_counts, config, im0, t
             # SISTEMA DE CONTAGEM DESATIVADO - APENAS o permanence_tracker salva na vehicle_counts
             # Isso garante regra 1:1 - apenas 1 registro por veículo que sai da área
             
-            # Atualizar contadores internos para não perder a lógica do YOLO
+            # AUTORIZAÇÃO DE VEÍCULOS que cruzaram linhas de contagem
             if previous_counts.get(area, {}).get(vehicle_code, {}).get('in', 0) < count_in:
+                # Autorizar todos os veículos que cruzaram linha (não sabemos qual track_id específico)
+                # Usar timestamp como referência para autorizações futuras
+                authorize_vehicle("CROSSING_EVENT", area, vehicle_code, (0, 0), current_timestamp)
                 previous_counts.setdefault(area, {}).setdefault(vehicle_code, {})['in'] = count_in
-                bug_logger.info(f"ENTRADA detectada -> Area: {area}, Codigo: {vehicle_code} (NAO salvo - aguardando saida)")
+                bug_logger.info(f"ENTRADA AUTORIZADA -> Area: {area}, Codigo: {vehicle_code} - veiculos na area podem ter tempo")
 
             if previous_counts.get(area, {}).get(vehicle_code, {}).get('out', 0) < count_out:
                 previous_counts.setdefault(area, {}).setdefault(vehicle_code, {})['out'] = count_out  
-                bug_logger.info(f"SAIDA detectada -> Area: {area}, Codigo: {vehicle_code} (NAO salvo - aguardando tracker)")
+                bug_logger.info(f"SAIDA detectada -> Area: {area}, Codigo: {vehicle_code} - aguardando processamento do tracker")
 
 # FUNÇÃO DESATIVADA - Agora apenas o permanence_tracker salva na vehicle_counts
 # Isso garante regra 1:1 sem duplicações
@@ -427,6 +372,13 @@ cursor.execute('PRAGMA journal_mode=DELETE;')  # Ativa o modo WAL para gravaçã
 # Variável para armazenar as últimas contagens
 previous_counts = {}
 
+# SISTEMA DE AUTORIZAÇÃO - Apenas veículos que cruzaram linha podem ter tempo de permanência
+authorized_vehicles = {
+    'vehicle_ids': set(),  # IDs autorizados
+    'recent_crossings': [],  # Lista: [(timestamp, area, vehicle_code, last_position)]
+    'lost_vehicles': {}  # Veículos perdidos: {area: [(timestamp, vehicle_code, last_position)]}
+}
+
 tracker = PermanenceTracker(cursor, conn, config['codigocliente'], permanencia_config)
 
 # Dicionário para persistência de rótulos dos veículos
@@ -483,6 +435,68 @@ if args.save_video:
     # Envia o video_writer inicial para a thread
     frame_queue.put(('change_writer', video_writer))
 
+# SISTEMA DE AUTORIZAÇÃO - Funções de gerenciamento
+def authorize_vehicle(track_id, area, vehicle_code, position, timestamp):
+    """
+    Autoriza um veículo que cruzou a linha de contagem.
+    """
+    authorized_vehicles['vehicle_ids'].add(track_id)
+    authorized_vehicles['recent_crossings'].append((timestamp, area, vehicle_code, position))
+    
+    # Limpar crossings antigos (mais de 5 minutos)
+    current_time = datetime.now()
+    authorized_vehicles['recent_crossings'] = [
+        crossing for crossing in authorized_vehicles['recent_crossings'] 
+        if (current_time - crossing[0]).total_seconds() < 300
+    ]
+    
+    bug_logger.info(f"AUTORIZADO -> Track {track_id} cruzou linha na {area} (codigo {vehicle_code})")
+
+def check_vehicle_authorization(track_id, area, position, timestamp):
+    """
+    Verifica se um veículo está autorizado a ter tempo de permanência.
+    Retorna: (autorizado: bool, vehicle_code: int)
+    """
+    # 1. AUTORIZAÇÃO PRIMÁRIA: ID já está na lista
+    if track_id in authorized_vehicles['vehicle_ids']:
+        return True, None  # vehicle_code será obtido depois
+    
+    # 2. FALLBACK POR PROXIMIDADE: Novo ID próximo de onde outro desapareceu
+    for lost_timestamp, lost_area, lost_vehicle_code, lost_position in authorized_vehicles.get('lost_vehicles', {}).get(area, []):
+        if (timestamp - lost_timestamp).total_seconds() < 30:  # Máximo 30s de diferença
+            distance = ((position[0] - lost_position[0])**2 + (position[1] - lost_position[1])**2)**0.5
+            if distance < 100:  # Máximo 100 pixels de distância
+                # Transferir autorização
+                authorized_vehicles['vehicle_ids'].add(track_id)
+                bug_logger.info(f"AUTORIZADO POR PROXIMIDADE -> Track {track_id} (similar ao perdido na {area})")
+                return True, lost_vehicle_code
+    
+    # 3. FALLBACK TEMPORAL: Crossing recente na área
+    current_time = datetime.now()
+    for crossing_timestamp, crossing_area, vehicle_code, crossing_position in authorized_vehicles['recent_crossings']:
+        if crossing_area == area and (current_time - crossing_timestamp).total_seconds() < 60:  # 60s de janela
+            authorized_vehicles['vehicle_ids'].add(track_id)
+            bug_logger.info(f"AUTORIZADO TEMPORAL -> Track {track_id} na {area} (crossing recente)")
+            return True, vehicle_code
+    
+    # 4. NÃO AUTORIZADO
+    bug_logger.warning(f"NAO AUTORIZADO -> Track {track_id} na {area} (nao cruzou linha)")
+    return False, None
+
+def handle_lost_vehicle(track_id, area, vehicle_code, position, timestamp):
+    """
+    Registra um veículo autorizado que foi perdido (para matching posterior).
+    """
+    if area not in authorized_vehicles['lost_vehicles']:
+        authorized_vehicles['lost_vehicles'][area] = []
+    
+    authorized_vehicles['lost_vehicles'][area].append((timestamp, area, vehicle_code, position))
+    
+    # Limitar histórico a 10 veículos perdidos por área
+    authorized_vehicles['lost_vehicles'][area] = authorized_vehicles['lost_vehicles'][area][-10:]
+    
+    bug_logger.info(f"VEICULO PERDIDO -> Track {track_id} na {area} (registrado para matching)")
+
 def get_vehicle_code(area_detectada, class_name, config):
     """
     Retorna o código do veículo baseado na área detectada e na classe.
@@ -495,7 +509,7 @@ def get_vehicle_code(area_detectada, class_name, config):
         if vehicle_code is not None:
             return vehicle_code
 
-    print(f"❌ Código do veículo não encontrado para '{class_name}' na área '{area_detectada}' (faixa: {faixa_detectada}). Usando -1.")
+    print(f"Código do veículo não encontrado para '{class_name}' na área '{area_detectada}' (faixa: {faixa_detectada}). Usando -1.")
     return -1  # Retorna -1 caso não seja encontrado
 
 
@@ -558,10 +572,18 @@ while True:
                             area_detectada = area_name
                             break  # Assim que encontrar a área, podemos sair do loop
 
-                    # 🔹 ADICIONANDO VERIFICAÇÃO: Se `area_detectada` for None, pula para o próximo track
+                    # 🔹 VERIFICAÇÃO: Se `area_detectada` for None, pula para o próximo track
                     if area_detectada is None:
                         logger.warning(f"Track ID {track_id} não está dentro de nenhuma área válida. Pulando para o próximo veículo.")
                         continue  # Ignora esse veículo e passa para o próximo
+                    
+                    # 🔐 VERIFICAÇÃO DE AUTORIZAÇÃO: Só processa se veículo estiver autorizado
+                    center_position = (centro_x, centro_y)
+                    is_authorized, fallback_vehicle_code = check_vehicle_authorization(track_id, area_detectada, center_position, current_timestamp)
+                    
+                    if not is_authorized:
+                        logger.warning(f"Track ID {track_id} na {area_detectada} NAO AUTORIZADO - nao cruzou linha. DESCARTADO!")
+                        continue  # Ignora veículo não autorizado
 
                     # Se a área ainda não foi inicializada no tracker, criamos ela
                     if area_detectada not in tracker.permanence_data:
@@ -611,21 +633,8 @@ while True:
 
                         bug_logger.info(f"VEICULO SAIU -> Cliente: {client_code}, Area: {area_detectada}, Veiculo: {track_id}, Codigo: {vehicle_code}, Tempo: {tempo:.2f}s")
 
-                        try:
-                            # APENAS salvar na vehicle_permanence
-                            # O permanence_tracker já vai salvar na vehicle_counts automaticamente
-                            safe_execute(cursor,
-                                '''INSERT INTO vehicle_permanence 
-                                (codigocliente, area, vehicle_code, timestamp, tempo_permanencia, enviado)
-                                VALUES (?, ?, ?, ?, ?, 0)''',
-                                (client_code, area_detectada, vehicle_code, current_timestamp.strftime('%Y-%m-%d %H:%M:%S'), tempo)
-                            )
-                            
-                            conn.commit()
-                            bug_logger.info(f"MANUAL SAVE -> Veiculo {track_id} ({class_name}) na {area_detectada}: {tempo:.2f}s salvo em vehicle_permanence")
-                            
-                        except sqlite3.Error as e:
-                            bug_logger.error(f"ERRO ao salvar tempo de permanencia para {track_id}: {e}")
+                        # A gravação na tabela vehicle_counts é feita pelo PermanenceTracker
+                        # Nenhum insert manual aqui (vehicle_permanence descontinuada)
                             
 
                     # Desenhar o rótulo e a bounding box no frame

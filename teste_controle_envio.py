@@ -32,11 +32,13 @@ def criar_estrutura_teste():
     conn = sqlite3.connect(TEST_DB)
     cursor = conn.cursor()
     
-    # Criar tabela para tempos de permanência dos veículos
-    cursor.execute('''CREATE TABLE IF NOT EXISTS vehicle_permanence (
+    # Criar tabela principal (vehicle_counts) com controle de envio
+    cursor.execute('''CREATE TABLE IF NOT EXISTS vehicle_counts (
                       id INTEGER PRIMARY KEY AUTOINCREMENT,
-                      codigocliente INTEGER,
+                      area TEXT,
                       vehicle_code INTEGER,
+                      count_in INTEGER,
+                      count_out INTEGER,
                       timestamp TEXT,
                       tempo_permanencia FLOAT,
                       enviado INTEGER DEFAULT 0)''')
@@ -50,18 +52,18 @@ def inserir_dados_teste():
     conn = sqlite3.connect(TEST_DB)
     cursor = conn.cursor()
     
-    # Criar alguns registros de teste
+    # Criar alguns registros de teste (somente saídas com tempo)
     test_data = [
-        (TEST_CLIENT_CODE, 26057, '2024-01-15 10:30:00', 15.5, 0),
-        (TEST_CLIENT_CODE, 26058, '2024-01-15 10:35:00', 22.3, 0),
-        (TEST_CLIENT_CODE, 26059, '2024-01-15 10:40:00', 8.7, 0),
-        (TEST_CLIENT_CODE, 26057, '2024-01-15 10:45:00', 31.2, 0),
-        (TEST_CLIENT_CODE, 26060, '2024-01-15 10:50:00', 12.9, 0)
+        ('area_1', 26057, 0, 1, '2024-01-15 10:30:00', 15.5, 0),
+        ('area_1', 26058, 0, 1, '2024-01-15 10:35:00', 22.3, 0),
+        ('area_1', 26059, 0, 1, '2024-01-15 10:40:00', 8.7, 0),
+        ('area_2', 26057, 0, 1, '2024-01-15 10:45:00', 31.2, 0),
+        ('area_2', 26060, 0, 1, '2024-01-15 10:50:00', 12.9, 0)
     ]
     
     cursor.executemany(
-        '''INSERT INTO vehicle_permanence (codigocliente, vehicle_code, timestamp, tempo_permanencia, enviado)
-           VALUES (?, ?, ?, ?, ?)''', test_data)
+        '''INSERT INTO vehicle_counts (area, vehicle_code, count_in, count_out, timestamp, tempo_permanencia, enviado)
+           VALUES (?, ?, ?, ?, ?, ?, ?)''', test_data)
     
     conn.commit()
     conn.close()
@@ -72,7 +74,7 @@ def buscar_nao_enviados():
     conn = sqlite3.connect(TEST_DB)
     cursor = conn.cursor()
     
-    query = "SELECT id, timestamp, vehicle_code, tempo_permanencia FROM vehicle_permanence WHERE enviado = 0 ORDER BY timestamp"
+    query = "SELECT id, timestamp, vehicle_code, tempo_permanencia FROM vehicle_counts WHERE enviado = 0 AND count_out = 1 AND tempo_permanencia IS NOT NULL ORDER BY timestamp"
     cursor.execute(query)
     rows = cursor.fetchall()
     conn.close()
@@ -87,7 +89,7 @@ def marcar_como_enviado(record_id):
     """Marca um registro específico como enviado."""
     conn = sqlite3.connect(TEST_DB)
     cursor = conn.cursor()
-    cursor.execute("UPDATE vehicle_permanence SET enviado = 1 WHERE id = ?", (record_id,))
+    cursor.execute("UPDATE vehicle_counts SET enviado = 1 WHERE id = ?", (record_id,))
     conn.commit()
     conn.close()
     print(f"OK - Registro ID {record_id} marcado como enviado.")
@@ -109,7 +111,7 @@ def teste_compatibilidade_banco_antigo():
     """Testa a compatibilidade com bancos antigos (sem campo 'enviado')."""
     print("\nTestando compatibilidade com banco antigo...")
     
-    # Criar banco sem o campo 'enviado'
+    # Criar banco sem o campo 'enviado' em vehicle_counts
     old_db = "teste_antigo.db"
     if os.path.exists(old_db):
         os.remove(old_db)
@@ -118,30 +120,32 @@ def teste_compatibilidade_banco_antigo():
     cursor = conn.cursor()
     
     # Estrutura antiga (sem campo 'enviado')
-    cursor.execute('''CREATE TABLE IF NOT EXISTS vehicle_permanence (
+    cursor.execute('''CREATE TABLE IF NOT EXISTS vehicle_counts (
                       id INTEGER PRIMARY KEY AUTOINCREMENT,
-                      codigocliente INTEGER,
+                      area TEXT,
                       vehicle_code INTEGER,
+                      count_in INTEGER,
+                      count_out INTEGER,
                       timestamp TEXT,
                       tempo_permanencia FLOAT)''')
     
     # Inserir um registro
     cursor.execute(
-        '''INSERT INTO vehicle_permanence (codigocliente, vehicle_code, timestamp, tempo_permanencia)
-           VALUES (?, ?, ?, ?)''', (TEST_CLIENT_CODE, 26057, '2024-01-15 11:00:00', 45.6))
+        '''INSERT INTO vehicle_counts (area, vehicle_code, count_in, count_out, timestamp, tempo_permanencia)
+           VALUES (?, ?, 0, 1, ?, ?)''', ('area_1', 26057, '2024-01-15 11:00:00', 45.6))
     
     conn.commit()
     
     # Simular o código de compatibilidade
-    cursor.execute("PRAGMA table_info(vehicle_permanence)")
+    cursor.execute("PRAGMA table_info(vehicle_counts)")
     columns = [column[1] for column in cursor.fetchall()]
     if 'enviado' not in columns:
-        cursor.execute("ALTER TABLE vehicle_permanence ADD COLUMN enviado INTEGER DEFAULT 0")
+        cursor.execute("ALTER TABLE vehicle_counts ADD COLUMN enviado INTEGER DEFAULT 0")
         conn.commit()
-        print("OK - Coluna 'enviado' adicionada automaticamente ao banco antigo.")
+        print("OK - Coluna 'enviado' adicionada automaticamente ao banco antigo (vehicle_counts).")
     
     # Verificar que o registro existe e tem enviado = 0
-    cursor.execute("SELECT id, enviado FROM vehicle_permanence")
+    cursor.execute("SELECT id, enviado FROM vehicle_counts")
     result = cursor.fetchone()
     print(f"OK - Registro no banco antigo: ID={result[0]}, enviado={result[1]}")
     
