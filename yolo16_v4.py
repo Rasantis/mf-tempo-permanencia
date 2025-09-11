@@ -238,19 +238,37 @@ def save_counts_to_db(area_counts, cursor, conn, previous_counts, config, im0, t
             count_in = type_counts['in']
             count_out = type_counts['out']
 
-            # SISTEMA DE CONTAGEM DESATIVADO - APENAS o permanence_tracker salva na vehicle_counts
-            # Isso garante regra 1:1 - apenas 1 registro por veículo que sai da área
+            # SISTEMA DE CONTAGEM EM USO PARA ENTRADAS
+            # PermanenceTracker continua responsável por salvar SAÍDAS (count_out=1 com tempo_permanencia)
             
-            # AUTORIZAÇÃO DE VEÍCULOS que cruzaram linhas de contagem
+            # AUTORIZAÇÃO DE VEÍCULOS que cruzaram linhas de contagem + SALVAR ENTRADA
             if previous_counts.get(area, {}).get(vehicle_code, {}).get('in', 0) < count_in:
-                # Autorizar todos os veículos que cruzaram linha (não sabemos qual track_id específico)
-                # Usar timestamp como referência para autorizações futuras
-                authorize_vehicle("CROSSING_EVENT", area, vehicle_code, (0, 0), current_timestamp)
+                prev_in = previous_counts.get(area, {}).get(vehicle_code, {}).get('in', 0)
+                delta_in = max(0, count_in - prev_in)
+
+                # Autoriza evento de cruzamento (timestamp local)
+                authorize_vehicle("CROSSING_EVENT", area, vehicle_code, (0, 0), datetime.now())
+
+                # Inserir um registro por incremento detectado
+                try:
+                    insert_entry = (
+                        """INSERT INTO vehicle_counts (area, vehicle_code, count_in, count_out, timestamp, tempo_permanencia, enviado)
+                               VALUES (?, ?, 1, 0, ?, NULL, 0)"""
+                    )
+                    for _ in range(delta_in):
+                        ts_now = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+                        safe_execute(cursor, insert_entry, (area, vehicle_code, ts_now))
+                    conn.commit()
+                    bug_logger.info(f"ENTRADA(S) SALVA(S) -> Area: {area}, Codigo: {vehicle_code}, Qtde: {delta_in}")
+                except Exception as e:
+                    logger.error(f"Falha ao salvar ENTRADA em vehicle_counts (Area: {area}, Codigo: {vehicle_code}): {e}")
+
                 previous_counts.setdefault(area, {}).setdefault(vehicle_code, {})['in'] = count_in
                 bug_logger.info(f"ENTRADA AUTORIZADA -> Area: {area}, Codigo: {vehicle_code} - veiculos na area podem ter tempo")
 
             if previous_counts.get(area, {}).get(vehicle_code, {}).get('out', 0) < count_out:
                 previous_counts.setdefault(area, {}).setdefault(vehicle_code, {})['out'] = count_out  
+                # Não inserimos SAÍDA aqui para evitar duplicação; PermanenceTracker grava com tempo_permanencia
                 bug_logger.info(f"SAIDA detectada -> Area: {area}, Codigo: {vehicle_code} - aguardando processamento do tracker")
 
 # FUNÇÃO DESATIVADA - Agora apenas o permanence_tracker salva na vehicle_counts
