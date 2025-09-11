@@ -175,23 +175,33 @@ class PermanenceTracker:
             vehicle_code = self.permanence_data[area_name]['vehicle_codes'].get(track_id, -1)
             timestamp_str = last_seen.strftime('%Y-%m-%d %H:%M:%S')
 
-            # Salvar na tabela vehicle_counts APENAS se não existir registro similar recente
+            # Primeiro tenta ATUALIZAR uma saída previamente inserida (count_out=1 e tempo_permanencia NULL)
             self.cursor.execute(
-                '''SELECT COUNT(*) FROM vehicle_counts 
-                   WHERE area = ? AND vehicle_code = ? 
-                   AND ABS(julianday(?) - julianday(timestamp)) * 24 * 60 * 60 < 30''',
+                '''SELECT id FROM vehicle_counts 
+                   WHERE area = ? AND vehicle_code = ? AND count_out = 1 
+                     AND tempo_permanencia IS NULL 
+                     AND datetime(timestamp) >= datetime(?, '-600 seconds')
+                   ORDER BY id DESC LIMIT 1''',
                 (area_name, vehicle_code, timestamp_str)
             )
-            existing_count = self.cursor.fetchone()[0]
-            if existing_count == 0:
+            row = self.cursor.fetchone()
+            if row:
+                rec_id = row[0]
+                self.cursor.execute(
+                    '''UPDATE vehicle_counts 
+                       SET tempo_permanencia = ?, timestamp = ?, enviado = 0 
+                       WHERE id = ?''',
+                    (tempo_permanencia, timestamp_str, rec_id)
+                )
+                logger.info(f"ATUALIZADO vehicle_counts ID={rec_id}: Tempo {tempo_permanencia:.2f}s (area {area_name})")
+            else:
+                # Se não houver registro de saída prévio, insere um novo
                 self.cursor.execute(
                     '''INSERT INTO vehicle_counts (area, vehicle_code, count_in, count_out, timestamp, tempo_permanencia, enviado)
                        VALUES (?, ?, 0, 1, ?, ?, 0)''',
                     (area_name, vehicle_code, timestamp_str, tempo_permanencia)
                 )
                 logger.info(f"INSERIDO em vehicle_counts: Track {track_id}, Area {area_name}, Tempo {tempo_permanencia:.2f}s (enviado=0)")
-            else:
-                logger.info(f"DUPLICACAO EVITADA: Track {track_id} ja tem registro recente em vehicle_counts")
             
             self.conn.commit()
             logger.info(f"Veiculo {track_id} saiu da area {area_name} com tempo {tempo_permanencia:.2f}s - SALVO EM AMBAS AS TABELAS!")

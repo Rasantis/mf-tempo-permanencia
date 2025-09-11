@@ -267,9 +267,25 @@ def save_counts_to_db(area_counts, cursor, conn, previous_counts, config, im0, t
                 bug_logger.info(f"ENTRADA AUTORIZADA -> Area: {area}, Codigo: {vehicle_code} - veiculos na area podem ter tempo")
 
             if previous_counts.get(area, {}).get(vehicle_code, {}).get('out', 0) < count_out:
+                prev_out = previous_counts.get(area, {}).get(vehicle_code, {}).get('out', 0)
+                delta_out = max(0, count_out - prev_out)
+
+                # Inserir um registro por incremento detectado de SAÍDA (sem tempo ainda)
+                try:
+                    insert_exit = (
+                        """INSERT INTO vehicle_counts (area, vehicle_code, count_in, count_out, timestamp, tempo_permanencia, enviado)
+                               VALUES (?, ?, 0, 1, ?, NULL, 0)"""
+                    )
+                    for _ in range(delta_out):
+                        ts_now = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+                        safe_execute(cursor, insert_exit, (area, vehicle_code, ts_now))
+                    conn.commit()
+                    bug_logger.info(f"SAIDA(S) SALVA(S) -> Area: {area}, Codigo: {vehicle_code}, Qtde: {delta_out}")
+                except Exception as e:
+                    logger.error(f"Falha ao salvar SAIDA em vehicle_counts (Area: {area}, Codigo: {vehicle_code}): {e}")
+
                 previous_counts.setdefault(area, {}).setdefault(vehicle_code, {})['out'] = count_out  
-                # Não inserimos SAÍDA aqui para evitar duplicação; PermanenceTracker grava com tempo_permanencia
-                bug_logger.info(f"SAIDA detectada -> Area: {area}, Codigo: {vehicle_code} - aguardando processamento do tracker")
+                bug_logger.info(f"SAIDA detectada -> Area: {area}, Codigo: {vehicle_code} - aguardando processamento do tracker para tempo")
 
 # FUNÇÃO DESATIVADA - Agora apenas o permanence_tracker salva na vehicle_counts
 # Isso garante regra 1:1 sem duplicações
