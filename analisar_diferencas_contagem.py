@@ -1,307 +1,342 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-SCRIPT PARA ANALISAR DIFERENÇAS DE CONTAGEM ENTRE BANCO LOCAL E MFWEB
+ANALISE DE CONSISTENCIA DO vehicle_counts
 
-Este script investiga possíveis causas das diferenças:
-- Registros duplicados
-- Registros com vehicle_code inválido
-- Registros com tempo < 1s
-- Registros não enviados por falhas
-- Timestamps problemáticos
+Ferramenta de apoio para investigar diferencas entre os dados locais
+salvos em vehicle_counts e o que foi ou nao enviado para a MFWeb.
 """
 
 import sqlite3
 import argparse
-import pandas as pd
 from datetime import datetime, timedelta
-from collections import Counter
-
 class AnalisadorContagem:
-    def __init__(self, db_path):
+    def __init__(self, db_path: str) -> None:
         self.db_path = db_path
         self.conn = sqlite3.connect(db_path)
         self.cursor = self.conn.cursor()
-    
-    def verificar_estrutura_banco(self):
-        """Verifica a estrutura atual do banco."""
+
+    # ------------------------------------------------------------------ #
+    # Estrutura
+    # ------------------------------------------------------------------ #
+    def verificar_estrutura_banco(self) -> None:
+        """Lista tabelas e valida a estrutura de vehicle_counts."""
         print("=" * 60)
         print("ESTRUTURA DO BANCO DE DADOS")
         print("=" * 60)
-        
-        # Verificar tabelas existentes
+
         self.cursor.execute("SELECT name FROM sqlite_master WHERE type='table'")
-        tabelas = self.cursor.fetchall()
-        print(f"Tabelas encontradas: {[t[0] for t in tabelas]}")
-        
-        # Verificar estrutura da tabela vehicle_permanence
-        if any('vehicle_permanence' in t for t in tabelas):
-            self.cursor.execute("PRAGMA table_info(vehicle_permanence)")
-            colunas = self.cursor.fetchall()
-            print(f"\nColunas da tabela vehicle_permanence:")
-            for col in colunas:
-                print(f"  {col[1]} ({col[2]}) - Default: {col[4]}")
-            
-            # Verificar se tem campo 'enviado'
-            tem_campo_enviado = any('enviado' in col for col in colunas)
-            print(f"\nCampo 'enviado' presente: {'SIM' if tem_campo_enviado else 'NÃO'}")
-            
-            if not tem_campo_enviado:
-                print("ATENÇÃO: Campo 'enviado' não existe! Banco precisa ser atualizado.")
-        else:
-            print("ERRO: Tabela 'vehicle_permanence' não encontrada!")
-    
-    def contagem_geral(self):
-        """Análise geral de contagem."""
+        tabelas = [t[0] for t in self.cursor.fetchall()]
+        print(f"Tabelas encontradas: {tabelas}")
+
+        if "vehicle_counts" not in tabelas:
+            print("ERRO: tabela vehicle_counts nao encontrada!")
+            return
+
+        self.cursor.execute("PRAGMA table_info(vehicle_counts)")
+        colunas = self.cursor.fetchall()
+        print("\nColunas da tabela vehicle_counts:")
+        for col in colunas:
+            print(f"  {col[1]} ({col[2]}) - Default: {col[4]}")
+
+        col_names = {col[1] for col in colunas}
+        if "tempo_permanencia" not in col_names:
+            print("\nATENCAO: coluna tempo_permanencia nao existe.")
+        if "enviado" not in col_names:
+            print("\nATENCAO: coluna enviado nao existe.")
+
+        if "vehicle_permanence" in tabelas:
+            print("\nOBS: tabela antiga vehicle_permanence ainda existe (nao utilizada).")
+
+    # ------------------------------------------------------------------ #
+    # Contagens gerais
+    # ------------------------------------------------------------------ #
+    def contagem_geral(self) -> None:
+        """Relatorio resumido das contagens e status de envio."""
         print("\n" + "=" * 60)
         print("CONTAGEM GERAL")
         print("=" * 60)
-        
+
         try:
-            # Total geral
-            self.cursor.execute("SELECT COUNT(*) FROM vehicle_permanence")
+            self.cursor.execute("SELECT COUNT(*) FROM vehicle_counts")
             total = self.cursor.fetchone()[0]
-            print(f"Total de registros: {total}")
-            
-            # Verificar se campo enviado existe
-            self.cursor.execute("PRAGMA table_info(vehicle_permanence)")
-            colunas = [col[1] for col in self.cursor.fetchall()]
-            tem_enviado = 'enviado' in colunas
-            
-            if tem_enviado:
-                # Com campo enviado
-                self.cursor.execute("SELECT enviado, COUNT(*) FROM vehicle_permanence GROUP BY enviado")
-                por_status = self.cursor.fetchall()
-                print("Registros por status de envio:")
-                for status, qtd in por_status:
-                    status_text = "Não enviado" if status == 0 else "Enviado" if status == 1 else f"Status {status}"
-                    print(f"  {status_text}: {qtd}")
-            else:
-                print("Campo 'enviado' não existe - todos os registros serão considerados não enviados")
-            
-            # Por período
-            self.cursor.execute("""SELECT DATE(timestamp) as data, COUNT(*) as qtd 
-                                 FROM vehicle_permanence 
-                                 GROUP BY DATE(timestamp) 
-                                 ORDER BY data DESC 
-                                 LIMIT 10""")
+            print(f"Total de registros na tabela: {total}")
+
+            self.cursor.execute(
+                """
+                SELECT COUNT(*) FROM vehicle_counts
+                WHERE count_out = 1
+                  AND tempo_permanencia IS NOT NULL
+                """
+            )
+            total_saidas = self.cursor.fetchone()[0]
+            print(f"Saidas com tempo (count_out=1): {total_saidas}")
+
+            self.cursor.execute(
+                """
+                SELECT COUNT(*) FROM vehicle_counts
+                WHERE count_out = 1
+                  AND tempo_permanencia IS NULL
+                """
+            )
+            saidas_sem_tempo = self.cursor.fetchone()[0]
+            print(f"Saidas sem tempo registrado: {saidas_sem_tempo}")
+
+            self.cursor.execute(
+                """
+                SELECT enviado, COUNT(*) FROM vehicle_counts
+                WHERE count_out = 1
+                  AND tempo_permanencia IS NOT NULL
+                GROUP BY enviado
+                """
+            )
+            status_envio = self.cursor.fetchall()
+            if status_envio:
+                print("\nRegistros de saida por status de envio:")
+                for enviado, qtd in status_envio:
+                    label = "Nao enviado" if enviado == 0 else "Enviado"
+                    print(f"  {label:<12}: {qtd}")
+
+            self.cursor.execute(
+                """
+                SELECT DATE(timestamp) AS data, COUNT(*) as qtd
+                FROM vehicle_counts
+                WHERE count_out = 1
+                  AND tempo_permanencia IS NOT NULL
+                GROUP BY DATE(timestamp)
+                ORDER BY data DESC
+                LIMIT 10
+                """
+            )
             por_dia = self.cursor.fetchall()
-            print(f"\nRegistros por dia (últimos 10 dias):")
-            for data, qtd in por_dia:
-                print(f"  {data}: {qtd} registros")
-            
-        except Exception as e:
-            print(f"ERRO na contagem geral: {e}")
-    
-    def analisar_duplicados(self):
-        """Analisa registros duplicados."""
+            if por_dia:
+                print("\nSaidas com tempo por dia (ultimos 10):")
+                for data, qtd in por_dia:
+                    print(f"  {data}: {qtd}")
+
+        except sqlite3.Error as err:
+            print(f"ERRO na contagem geral: {err}")
+
+    # ------------------------------------------------------------------ #
+    # Duplicados e inconsistencias
+    # ------------------------------------------------------------------ #
+    def analisar_duplicados(self) -> None:
+        """Procura registros duplicados de saida."""
         print("\n" + "=" * 60)
-        print("ANÁLISE DE REGISTROS DUPLICADOS")
+        print("ANALISE DE REGISTROS DUPLICADOS")
         print("=" * 60)
-        
+
         try:
-            # Duplicados por timestamp + vehicle_code
             query = """
-            SELECT timestamp, vehicle_code, COUNT(*) as qtd_duplicadas,
-                   GROUP_CONCAT(id) as ids
-            FROM vehicle_permanence 
-            GROUP BY timestamp, vehicle_code 
+            SELECT timestamp, vehicle_code, tempo_permanencia,
+                   COUNT(*) AS qtd, GROUP_CONCAT(id) AS ids
+            FROM vehicle_counts
+            WHERE count_out = 1
+              AND tempo_permanencia IS NOT NULL
+            GROUP BY timestamp, vehicle_code, tempo_permanencia
             HAVING COUNT(*) > 1
-            ORDER BY qtd_duplicadas DESC, timestamp DESC
+            ORDER BY timestamp DESC
             """
-            
             self.cursor.execute(query)
             duplicados = self.cursor.fetchall()
-            
-            if duplicados:
-                print(f"ENCONTRADOS {len(duplicados)} GRUPOS DE REGISTROS DUPLICADOS!")
-                total_duplicados = sum(d[2] - 1 for d in duplicados)  # -1 porque 1 é o original
-                print(f"Total de registros duplicados extras: {total_duplicados}")
-                
-                print("\nDetalhes dos duplicados:")
-                for i, (timestamp, vehicle_code, qtd, ids) in enumerate(duplicados[:20]):  # Mostra só os primeiros 20
-                    print(f"  {i+1}. Timestamp: {timestamp}, Vehicle: {vehicle_code}")
-                    print(f"      Quantidade: {qtd}, IDs: {ids}")
-                
-                if len(duplicados) > 20:
-                    print(f"  ... e mais {len(duplicados) - 20} grupos duplicados")
-                
-                # Duplicados por período
-                self.cursor.execute("""
-                SELECT DATE(timestamp) as data, 
-                       COUNT(*) - COUNT(DISTINCT timestamp, vehicle_code) as duplicados_extras
-                FROM vehicle_permanence 
-                GROUP BY DATE(timestamp) 
-                HAVING duplicados_extras > 0
-                ORDER BY data DESC
-                """)
-                duplicados_por_dia = self.cursor.fetchall()
-                
-                if duplicados_por_dia:
-                    print(f"\nDuplicados por dia:")
-                    for data, extras in duplicados_por_dia:
-                        print(f"  {data}: {extras} duplicados extras")
-            else:
+
+            if not duplicados:
                 print("Nenhum registro duplicado encontrado.")
-                
-        except Exception as e:
-            print(f"ERRO na análise de duplicados: {e}")
-    
-    def analisar_registros_invalidos(self):
-        """Analisa registros com dados inválidos."""
+                return
+
+            total_duplicados = sum(row[3] - 1 for row in duplicados)
+            print(f"Encontrados {len(duplicados)} grupos duplicados ({total_duplicados} registros extras).")
+            for ts, code, tempo, qtd, ids in duplicados[:10]:
+                print(f"  {ts} | code={code} | tempo={tempo:.2f}s | qtd={qtd} | ids={ids}")
+            if len(duplicados) > 10:
+                print("  ...")
+
+        except sqlite3.Error as err:
+            print(f"ERRO na analise de duplicados: {err}")
+
+    def analisar_registros_invalidos(self) -> None:
+        """Aponta registros com valores questionaveis."""
         print("\n" + "=" * 60)
-        print("ANÁLISE DE REGISTROS INVÁLIDOS")
+        print("ANALISE DE REGISTROS INVALIDOS")
         print("=" * 60)
-        
+
         try:
-            # Vehicle_code nulo ou inválido
-            self.cursor.execute("SELECT COUNT(*) FROM vehicle_permanence WHERE vehicle_code IS NULL")
-            nulos = self.cursor.fetchone()[0]
-            
-            self.cursor.execute("SELECT COUNT(*) FROM vehicle_permanence WHERE vehicle_code <= 0")
-            invalidos = self.cursor.fetchone()[0]
-            
-            print(f"Vehicle_code nulo: {nulos}")
-            print(f"Vehicle_code <= 0: {invalidos}")
-            
-            # Tempo de permanência muito baixo
-            self.cursor.execute("SELECT COUNT(*) FROM vehicle_permanence WHERE tempo_permanencia < 1")
-            tempo_baixo = self.cursor.fetchone()[0]
-            
-            self.cursor.execute("SELECT COUNT(*) FROM vehicle_permanence WHERE tempo_permanencia >= 1")
-            tempo_valido = self.cursor.fetchone()[0]
-            
-            print(f"Tempo < 1 segundo: {tempo_baixo}")
-            print(f"Tempo >= 1 segundo: {tempo_valido}")
-            
-            # Timestamps problemáticos
-            self.cursor.execute("SELECT COUNT(*) FROM vehicle_permanence WHERE timestamp IS NULL OR timestamp = ''")
-            timestamp_invalido = self.cursor.fetchone()[0]
-            print(f"Timestamp inválido: {timestamp_invalido}")
-            
-            # Registros que podem ser considerados válidos para envio
-            self.cursor.execute("""SELECT COUNT(*) FROM vehicle_permanence 
-                                 WHERE vehicle_code IS NOT NULL 
-                                 AND vehicle_code > 0 
-                                 AND tempo_permanencia >= 1
-                                 AND timestamp IS NOT NULL 
-                                 AND timestamp != ''""")
-            registros_validos = self.cursor.fetchone()[0]
-            print(f"\nRegistros teoricamente válidos para envio: {registros_validos}")
-            
-        except Exception as e:
-            print(f"ERRO na análise de registros inválidos: {e}")
-    
-    def analisar_por_cliente(self):
-        """Analisa registros por código de cliente."""
+            checks = {
+                "vehicle_code NULL ou <= 0": """
+                    SELECT COUNT(*) FROM vehicle_counts
+                    WHERE vehicle_code IS NULL OR vehicle_code <= 0
+                """,
+                "tempo_permanencia < 1s (saidas)": """
+                    SELECT COUNT(*) FROM vehicle_counts
+                    WHERE count_out = 1
+                      AND tempo_permanencia IS NOT NULL
+                      AND tempo_permanencia < 1
+                """,
+                "tempo_permanencia >= 3600s (saidas)": """
+                    SELECT COUNT(*) FROM vehicle_counts
+                    WHERE count_out = 1
+                      AND tempo_permanencia IS NOT NULL
+                      AND tempo_permanencia >= 3600
+                """,
+                "timestamp NULL ou vazio": """
+                    SELECT COUNT(*) FROM vehicle_counts
+                    WHERE timestamp IS NULL OR timestamp = ''
+                """,
+            }
+
+            for descricao, query in checks.items():
+                self.cursor.execute(query)
+                qtd = self.cursor.fetchone()[0]
+                print(f"{descricao}: {qtd}")
+
+        except sqlite3.Error as err:
+            print(f"ERRO na analise de registros invalidos: {err}")
+
+    # ------------------------------------------------------------------ #
+    # Distribuicoes
+    # ------------------------------------------------------------------ #
+    def analisar_por_area(self) -> None:
+        """Resumo de saidas com tempo por area."""
         print("\n" + "=" * 60)
-        print("ANÁLISE POR CÓDIGO DE CLIENTE")
+        print("ANALISE POR AREA")
         print("=" * 60)
-        
+
         try:
-            self.cursor.execute("""SELECT codigocliente, COUNT(*) as qtd 
-                                 FROM vehicle_permanence 
-                                 GROUP BY codigocliente 
-                                 ORDER BY qtd DESC""")
-            por_cliente = self.cursor.fetchall()
-            
-            print("Registros por código de cliente:")
-            for cliente, qtd in por_cliente:
-                print(f"  Cliente {cliente}: {qtd} registros")
-                
-        except Exception as e:
-            print(f"ERRO na análise por cliente: {e}")
-    
-    def analisar_por_vehicle_code(self):
-        """Analisa distribuição por vehicle_code."""
+            self.cursor.execute(
+                """
+                SELECT area, COUNT(*) FROM vehicle_counts
+                WHERE count_out = 1
+                  AND tempo_permanencia IS NOT NULL
+                GROUP BY area
+                ORDER BY COUNT(*) DESC
+                """
+            )
+            por_area = self.cursor.fetchall()
+            if por_area:
+                for area, qtd in por_area:
+                    print(f"  Area {area}: {qtd}")
+            else:
+                print("Nenhum dado de saida encontrado.")
+        except sqlite3.Error as err:
+            print(f"ERRO na analise por area: {err}")
+
+    def analisar_por_vehicle_code(self) -> None:
+        """Resumo por vehicle_code."""
         print("\n" + "=" * 60)
-        print("ANÁLISE POR VEHICLE_CODE")
+        print("ANALISE POR VEHICLE_CODE")
         print("=" * 60)
-        
+
         try:
-            self.cursor.execute("""SELECT vehicle_code, COUNT(*) as qtd 
-                                 FROM vehicle_permanence 
-                                 WHERE vehicle_code IS NOT NULL
-                                 GROUP BY vehicle_code 
-                                 ORDER BY qtd DESC""")
+            self.cursor.execute(
+                """
+                SELECT vehicle_code, COUNT(*) FROM vehicle_counts
+                WHERE vehicle_code IS NOT NULL
+                  AND count_out = 1
+                  AND tempo_permanencia IS NOT NULL
+                GROUP BY vehicle_code
+                ORDER BY COUNT(*) DESC
+                """
+            )
             por_vehicle = self.cursor.fetchall()
-            
-            print("Registros por vehicle_code:")
-            for vehicle, qtd in por_vehicle:
-                print(f"  Vehicle {vehicle}: {qtd} registros")
-                
-        except Exception as e:
-            print(f"ERRO na análise por vehicle_code: {e}")
-    
-    def sugerir_limpeza(self):
-        """Sugere comandos para limpeza de dados."""
+            if por_vehicle:
+                for code, qtd in por_vehicle[:20]:
+                    print(f"  Codigo {code}: {qtd}")
+                if len(por_vehicle) > 20:
+                    print("  ...")
+            else:
+                print("Nenhum dado encontrado.")
+        except sqlite3.Error as err:
+            print(f"ERRO na analise por vehicle_code: {err}")
+
+    # ------------------------------------------------------------------ #
+    # Sugerir comandos de limpeza
+    # ------------------------------------------------------------------ #
+    def sugerir_limpeza(self) -> None:
+        """Exibe comandos SQL uteis para correcoes manuais."""
         print("\n" + "=" * 60)
-        print("SUGESTÕES DE LIMPEZA")
+        print("SUGESTOES DE LIMPEZA")
         print("=" * 60)
-        
-        print("Para remover registros duplicados:")
-        print("""
-DELETE FROM vehicle_permanence 
+
+        print("\n-- Remover duplicados mantendo o menor id por combinacao basica")
+        print(
+            """DELETE FROM vehicle_counts
 WHERE id NOT IN (
-    SELECT MIN(id) 
-    FROM vehicle_permanence 
+    SELECT MIN(id)
+    FROM vehicle_counts
+    WHERE count_out = 1
+      AND tempo_permanencia IS NOT NULL
     GROUP BY timestamp, vehicle_code, tempo_permanencia
-);
-""")
-        
-        print("Para remover registros inválidos:")
-        print("""
-DELETE FROM vehicle_permanence 
-WHERE vehicle_code IS NULL 
-   OR vehicle_code <= 0 
-   OR tempo_permanencia < 1 
-   OR timestamp IS NULL 
-   OR timestamp = '';
-""")
-        
-        print("Para adicionar campo 'enviado' se não existir:")
-        print("""
-ALTER TABLE vehicle_permanence ADD COLUMN enviado INTEGER DEFAULT 0;
-""")
-    
-    def relatorio_completo(self):
-        """Gera relatório completo."""
-        print("RELATÓRIO DE ANÁLISE DE DIFERENÇAS DE CONTAGEM")
+);"""
+        )
+
+        print("\n-- Remover registros de saida com vehicle_code invalido")
+        print(
+            """DELETE FROM vehicle_counts
+WHERE count_out = 1
+  AND (vehicle_code IS NULL OR vehicle_code <= 0);"""
+        )
+
+        print("\n-- Remover saidas com tempo menor que 1s")
+        print(
+            """DELETE FROM vehicle_counts
+WHERE count_out = 1
+  AND tempo_permanencia IS NOT NULL
+  AND tempo_permanencia < 1;"""
+        )
+
+        print("\n-- Consultar resumo apos limpeza")
+        print(
+            """SELECT enviado, COUNT(*) FROM vehicle_counts
+WHERE count_out = 1
+  AND tempo_permanencia IS NOT NULL
+GROUP BY enviado;"""
+        )
+
+    # ------------------------------------------------------------------ #
+    def relatorio_completo(self) -> None:
+        """Executa todo o relatorio."""
+        print("RELATORIO DE ANALISE DE vehicle_counts")
         print("Data/Hora:", datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
         print("Banco analisado:", self.db_path)
-        
+
         self.verificar_estrutura_banco()
         self.contagem_geral()
         self.analisar_duplicados()
         self.analisar_registros_invalidos()
-        self.analisar_por_cliente()
+        self.analisar_por_area()
         self.analisar_por_vehicle_code()
         self.sugerir_limpeza()
-        
+
         print("\n" + "=" * 60)
-        print("ANÁLISE CONCLUÍDA")
+        print("ANALISE CONCLUIDA")
         print("=" * 60)
-    
-    def close(self):
-        """Fecha conexão com banco."""
+
+    def close(self) -> None:
+        """Fecha conexao."""
         self.conn.close()
 
-def main():
-    parser = argparse.ArgumentParser(description='Analisa diferenças de contagem no banco de permanência')
-    parser.add_argument('--db_path', type=str, default='yolo8.db', 
-                       help='Caminho para o banco de dados SQLite')
+
+def main() -> None:
+    parser = argparse.ArgumentParser(
+        description="Analisa diferencas e inconsistencias no vehicle_counts."
+    )
+    parser.add_argument(
+        "--db_path",
+        type=str,
+        default="yolo8.db",
+        help="Caminho para o banco de dados SQLite",
+    )
     args = parser.parse_args()
-    
+
     try:
         analisador = AnalisadorContagem(args.db_path)
         analisador.relatorio_completo()
         analisador.close()
-        
     except FileNotFoundError:
-        print(f"ERRO: Arquivo de banco não encontrado: {args.db_path}")
-        print("Verifique se o caminho está correto.")
-    except Exception as e:
-        print(f"ERRO: {e}")
+        print(f"ERRO: arquivo de banco nao encontrado: {args.db_path}")
+    except Exception as err:
+        print(f"ERRO inesperado: {err}")
+
 
 if __name__ == "__main__":
     main()

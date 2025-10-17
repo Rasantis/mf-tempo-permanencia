@@ -175,13 +175,12 @@ class PermanenceTracker:
             vehicle_code = self.permanence_data[area_name]['vehicle_codes'].get(track_id, -1)
             timestamp_str = last_seen.strftime('%Y-%m-%d %H:%M:%S')
 
-            # CORREÇÃO 1.3: Aumentar janela de busca de 600s (10min) para 1800s (30min)
-            # Isso evita duplicações em situações de trânsito lento ou processamento atrasado
+            # Primeiro tenta ATUALIZAR uma saída previamente inserida (count_out=1 e tempo_permanencia NULL)
             self.cursor.execute(
-                '''SELECT id FROM vehicle_counts
-                   WHERE area = ? AND vehicle_code = ? AND count_out = 1
-                     AND tempo_permanencia IS NULL
-                     AND datetime(timestamp) >= datetime(?, '-1800 seconds')
+                '''SELECT id FROM vehicle_counts 
+                   WHERE area = ? AND vehicle_code = ? AND count_out = 1 
+                     AND tempo_permanencia IS NULL 
+                     AND datetime(timestamp) >= datetime(?, '-600 seconds')
                    ORDER BY id DESC LIMIT 1''',
                 (area_name, vehicle_code, timestamp_str)
             )

@@ -1,170 +1,182 @@
 #!/usr/bin/env python3
 """
-Script para corrigir registros com tempo_permanencia NULL na tabela vehicle_counts,
-usando dados da tabela vehicle_permanence.
+Corrige registros de saida com tempo_permanencia NULL utilizando a propria
+tabela vehicle_counts como referencia.
+
+Estrategia:
+1. Para cada saida (count_out = 1) com tempo NULL, procura outro registro
+   da mesma area + vehicle_code com tempo preenchido e timestamp proximo.
+2. Se nao encontrar, utiliza a media das permanencias da area em uma janela
+   configuravel.
 """
 
+from __future__ import annotations
+
 import sqlite3
-import os
-import sys
+import argparse
+from datetime import datetime
 
-def fix_null_permanence_records(db_path):
+
+def fetch_null_records(cursor: sqlite3.Cursor, limit: int | None) -> list[tuple]:
+    query = """
+        SELECT id, area, vehicle_code, timestamp
+        FROM vehicle_counts
+        WHERE count_out = 1
+          AND tempo_permanencia IS NULL
+        ORDER BY id DESC
     """
-    Corrige registros com tempo_permanencia NULL usando dados da vehicle_permanence.
+    if limit:
+        query += f" LIMIT {int(limit)}"
+    cursor.execute(query)
+    return cursor.fetchall()
+
+
+def find_exact_match(
+    cursor: sqlite3.Cursor,
+    area: str,
+    vehicle_code: int,
+    timestamp: str,
+    window_seconds: int,
+) -> float | None:
+    query = """
+        SELECT tempo_permanencia
+        FROM vehicle_counts
+        WHERE count_out = 1
+          AND tempo_permanencia IS NOT NULL
+          AND area = ?
+          AND vehicle_code = ?
+          AND ABS(strftime('%s', ?) - strftime('%s', timestamp)) <= ?
+        ORDER BY ABS(strftime('%s', ?) - strftime('%s', timestamp)) ASC
+        LIMIT 1
     """
-    print("Iniciando correção de registros NULL...")
-    
+    cursor.execute(query, (area, vehicle_code, timestamp, window_seconds, timestamp))
+    row = cursor.fetchone()
+    return float(row[0]) if row else None
+
+
+def find_area_average(
+    cursor: sqlite3.Cursor,
+    area: str,
+    timestamp: str,
+    window_seconds: int,
+) -> float | None:
+    query = """
+        SELECT AVG(tempo_permanencia)
+        FROM vehicle_counts
+        WHERE count_out = 1
+          AND tempo_permanencia BETWEEN 1 AND 300
+          AND area = ?
+          AND ABS(strftime('%s', ?) - strftime('%s', timestamp)) <= ?
+    """
+    cursor.execute(query, (area, timestamp, window_seconds))
+    row = cursor.fetchone()
+    return float(row[0]) if row and row[0] is not None else None
+
+
+def update_record(cursor: sqlite3.Cursor, record_id: int, tempo: float) -> None:
+    cursor.execute(
+        """
+        UPDATE vehicle_counts
+        SET tempo_permanencia = ?, enviado = 0
+        WHERE id = ?
+        """,
+        (tempo, record_id),
+    )
+
+
+def process_database(
+    db_path: str,
+    limit: int | None,
+    match_window: int,
+    average_window: int,
+) -> None:
     try:
         conn = sqlite3.connect(db_path)
         cursor = conn.cursor()
-        
-        # Contar quantos registros estão NULL
-        cursor.execute("SELECT COUNT(*) FROM vehicle_counts WHERE tempo_permanencia IS NULL")
-        null_count = cursor.fetchone()[0]
-        print(f"Registros com tempo_permanencia NULL: {null_count}")
-        
-        if null_count == 0:
-            print("Nenhum registro NULL encontrado!")
+
+        cursor.execute(
+            "SELECT COUNT(*) FROM vehicle_counts WHERE tempo_permanencia IS NULL AND count_out = 1"
+        )
+        total_null = cursor.fetchone()[0]
+        if total_null == 0:
+            print("Nenhum registro com tempo_permanencia NULL encontrado.")
             return
-        
-        # Buscar registros de saída com tempo NULL
-        cursor.execute('''SELECT id, area, vehicle_code, timestamp 
-                          FROM vehicle_counts 
-                          WHERE count_out = 1 AND tempo_permanencia IS NULL 
-                          ORDER BY id DESC LIMIT 1000''')
-        
-        null_records = cursor.fetchall()
-        print(f"Processando {len(null_records)} registros de saída...")
-        
-        updated_count = 0
-        fallback_count = 0
-        
-        for record in null_records:
-            record_id, area, vehicle_code, timestamp = record
-            
-            # Estratégia 1: Buscar tempo exato para o vehicle_code e área
-            cursor.execute('''SELECT tempo_permanencia FROM vehicle_permanence 
-                              WHERE area = ? AND vehicle_code = ? 
-                              AND ABS(julianday(?) - julianday(timestamp)) * 24 * 60 < 15
-                              ORDER BY ABS(julianday(?) - julianday(timestamp)) LIMIT 1''', 
-                              (area, vehicle_code, timestamp, timestamp))
-            
-            exact_result = cursor.fetchone()
-            if exact_result and exact_result[0] is not None:
-                tempo = float(exact_result[0])
-                
-                # Atualizar o registro
-                cursor.execute('''UPDATE vehicle_counts 
-                                  SET tempo_permanencia = ? 
-                                  WHERE id = ?''', (tempo, record_id))
-                
-                updated_count += 1
-                if updated_count % 100 == 0:
-                    print(f"Atualizados {updated_count} registros...")
+
+        print(f"Encontrados {total_null} registros de saida com tempo_permanencia NULL.")
+        registros = fetch_null_records(cursor, limit)
+        print(f"Processando {len(registros)} registros...")
+
+        atualizados = 0
+        via_media = 0
+
+        for rec_id, area, vehicle_code, ts in registros:
+            match = find_exact_match(cursor, area, vehicle_code, ts, match_window)
+            if match is not None:
+                update_record(cursor, rec_id, match)
+                atualizados += 1
                 continue
-            
-            # Estratégia 2: Fallback - usar média dos tempos da área
-            cursor.execute('''SELECT AVG(tempo_permanencia) FROM vehicle_permanence 
-                              WHERE area = ? 
-                              AND ABS(julianday(?) - julianday(timestamp)) * 24 * 60 < 60
-                              AND tempo_permanencia > 1 AND tempo_permanencia < 300''', 
-                              (area, timestamp))
-            
-            avg_result = cursor.fetchone()
-            if avg_result and avg_result[0] is not None:
-                tempo = float(avg_result[0])
-                
-                # Atualizar o registro
-                cursor.execute('''UPDATE vehicle_counts 
-                                  SET tempo_permanencia = ? 
-                                  WHERE id = ?''', (tempo, record_id))
-                
-                fallback_count += 1
-                updated_count += 1
-                if updated_count % 100 == 0:
-                    print(f"Atualizados {updated_count} registros...")
-        
-        # Commit das alterações
+
+            media = find_area_average(cursor, area, ts, average_window)
+            if media is not None:
+                update_record(cursor, rec_id, media)
+                via_media += 1
+                atualizados += 1
+
         conn.commit()
-        
-        print(f"\nResultados da correção:")
-        print(f"- Registros atualizados com tempo exato: {updated_count - fallback_count}")
-        print(f"- Registros atualizados com tempo médio: {fallback_count}")
-        print(f"- Total de registros corrigidos: {updated_count}")
-        
-        # Verificar quantos ainda estão NULL
-        cursor.execute("SELECT COUNT(*) FROM vehicle_counts WHERE tempo_permanencia IS NULL")
-        remaining_null = cursor.fetchone()[0]
-        print(f"- Registros NULL restantes: {remaining_null}")
-        
-        conn.close()
-        
-    except sqlite3.Error as e:
-        print(f"Erro ao processar banco de dados: {e}")
+        print("\nRESULTADO DA CORRECAO")
+        print(f"  Total atualizados.........: {atualizados}")
+        print(f"  Via correspondencia exata.: {atualizados - via_media}")
+        print(f"  Via media por area........: {via_media}")
 
-def show_statistics(db_path):
-    """
-    Mostra estatísticas dos dados após a correção.
-    """
-    print("\n" + "="*50)
-    print("ESTATÍSTICAS APÓS CORREÇÃO")
-    print("="*50)
-    
-    try:
-        conn = sqlite3.connect(db_path)
-        cursor = conn.cursor()
-        
-        # Estatísticas gerais
-        cursor.execute("SELECT COUNT(*) FROM vehicle_counts")
-        total = cursor.fetchone()[0]
-        
-        cursor.execute("SELECT COUNT(*) FROM vehicle_counts WHERE tempo_permanencia IS NOT NULL")
-        with_time = cursor.fetchone()[0]
-        
-        cursor.execute("SELECT COUNT(*) FROM vehicle_counts WHERE tempo_permanencia IS NULL")
-        null_time = cursor.fetchone()[0]
-        
-        print(f"Total de registros: {total}")
-        print(f"Com tempo de permanência: {with_time}")
-        print(f"Com tempo NULL: {null_time}")
-        print(f"Percentual corrigido: {(with_time/total*100):.1f}%")
-        
-        # Alguns exemplos
-        cursor.execute("""SELECT area, vehicle_code, timestamp, tempo_permanencia, count_in, count_out 
-                          FROM vehicle_counts 
-                          WHERE tempo_permanencia IS NOT NULL 
-                          ORDER BY id DESC LIMIT 5""")
-        
-        examples = cursor.fetchall()
-        if examples:
-            print(f"\nExemplos de registros corrigidos:")
-            for ex in examples:
-                print(f"  Área: {ex[0]}, Código: {ex[1]}, Tempo: {ex[3]:.2f}s, In: {ex[4]}, Out: {ex[5]}")
-        
+        cursor.execute(
+            "SELECT COUNT(*) FROM vehicle_counts WHERE tempo_permanencia IS NULL AND count_out = 1"
+        )
+        restantes = cursor.fetchone()[0]
+        print(f"  Registros ainda NULL......: {restantes}")
         conn.close()
-        
-    except sqlite3.Error as e:
-        print(f"Erro ao gerar estatísticas: {e}")
 
-def main():
-    db_path = "yolo8.db"
-    
-    if not os.path.exists(db_path):
-        print(f"Erro: Arquivo de banco de dados não encontrado: {db_path}")
-        sys.exit(1)
-    
-    print("CORREÇÃO DE REGISTROS COM TEMPO_PERMANENCIA NULL")
-    print("="*50)
-    
-    # Executar correção
-    fix_null_permanence_records(db_path)
-    
-    # Mostrar estatísticas
-    show_statistics(db_path)
-    
-    print("\n" + "="*50)
-    print("CORREÇÃO CONCLUÍDA!")
-    print("Execute o sistema novamente para continuar salvando os tempos corretamente.")
+    except sqlite3.Error as err:
+        print(f"ERRO ao processar banco de dados: {err}")
+
+
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(
+        description="Corrige tempos de permanencia NULL em vehicle_counts."
+    )
+    parser.add_argument(
+        "--db_path",
+        type=str,
+        default="yolo8.db",
+        help="Caminho para o banco SQLite.",
+    )
+    parser.add_argument(
+        "--limit",
+        type=int,
+        default=None,
+        help="Limitar o numero de registros processados (mais recente primeiro).",
+    )
+    parser.add_argument(
+        "--match_window",
+        type=int,
+        default=600,
+        help="Janela (em segundos) para considerar uma correspondencia exata. Padrao: 600s.",
+    )
+    parser.add_argument(
+        "--average_window",
+        type=int,
+        default=1800,
+        help="Janela (em segundos) para calcular media por area. Padrao: 1800s.",
+    )
+    return parser.parse_args()
+
+
+def main() -> None:
+    args = parse_args()
+    print("CORRECAO DE REGISTROS COM TEMPO_PERMANENCIA NULL")
+    print("=" * 60)
+    print(f"Banco........: {args.db_path}")
+    process_database(args.db_path, args.limit, args.match_window, args.average_window)
+
 
 if __name__ == "__main__":
     main()

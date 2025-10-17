@@ -1,4 +1,4 @@
-﻿import cv2
+import cv2
 import json
 import os
 import time
@@ -217,6 +217,7 @@ def has_count_changed(area, vehicle_code, count_in, count_out, cursor):
 def save_counts_to_db(area_counts, cursor, conn, previous_counts, config, im0, tracker):
     current_time = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
 
+    # Mapeamento da área para as faixas
     area_to_faixa = {
         'area_1': 'faixa1',
         'area_2': 'faixa2'
@@ -225,32 +226,30 @@ def save_counts_to_db(area_counts, cursor, conn, previous_counts, config, im0, t
     for area, counts in area_counts.items():
         faixa = area_to_faixa.get(area)
         if not faixa:
-            logger.warning(f'Faixa nao encontrada para a area {area}')
+            logger.warning(f"Faixa não encontrada para a área {area}")
             continue
 
         for vehicle_type, type_counts in counts['types'].items():
-            faixa_config = config['cameras']['camera1']['faixas'].get(faixa, {})\n            vehicle_code = faixa_config.get(vehicle_type)\n            if not vehicle_code and vehicle_type.endswith('s'):\n                vehicle_code = faixa_config.get(vehicle_type[:-1])\n            if not vehicle_code:\n                logger.warning(f'Codigo de veiculo nao encontrado para {vehicle_type} na faixa {faixa}')\n                continue
+            vehicle_code = config['cameras']['camera1']['faixas'].get(faixa, {}).get(vehicle_type)
+            if not vehicle_code:
+                logger.warning(f"Código do veículo não encontrado para {vehicle_type} na faixa {faixa}")
+                continue
 
             count_in = type_counts['in']
             count_out = type_counts['out']
 
-            state = previous_counts.setdefault(area, {}).setdefault(vehicle_code, {'in': 0, 'out': 0})
-            prev_in = state.get('in', 0)
-            prev_out = state.get('out', 0)
+            # SISTEMA DE CONTAGEM EM USO PARA ENTRADAS
+            # PermanenceTracker continua responsável por salvar SAÍDAS (count_out=1 com tempo_permanencia)
+            
+            # AUTORIZAÇÃO DE VEÍCULOS que cruzaram linhas de contagem + SALVAR ENTRADA
+            if previous_counts.get(area, {}).get(vehicle_code, {}).get('in', 0) < count_in:
+                prev_in = previous_counts.get(area, {}).get(vehicle_code, {}).get('in', 0)
+                delta_in = max(0, count_in - prev_in)
 
-            if count_in < prev_in:
-                bug_logger.info(f'RESET de entrada detectado (area {area}, codigo {vehicle_code}): {prev_in} -> {count_in}')
-                prev_in = count_in
-                state['in'] = count_in
-            if count_out < prev_out:
-                bug_logger.info(f'RESET de saida detectado (area {area}, codigo {vehicle_code}): {prev_out} -> {count_out}')
-                prev_out = count_out
-                state['out'] = count_out
+                # Autoriza evento de cruzamento (timestamp local)
+                authorize_vehicle("CROSSING_EVENT", area, vehicle_code, (0, 0), datetime.now())
 
-            if count_in > prev_in:
-                delta_in = count_in - prev_in
-                authorize_vehicle('CROSSING_EVENT', area, vehicle_code, (0, 0), datetime.now())
-
+                # Inserir um registro por incremento detectado
                 try:
                     insert_entry = (
                         """INSERT INTO vehicle_counts (area, vehicle_code, count_in, count_out, timestamp, tempo_permanencia, enviado)
@@ -260,18 +259,18 @@ def save_counts_to_db(area_counts, cursor, conn, previous_counts, config, im0, t
                         ts_now = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
                         safe_execute(cursor, insert_entry, (area, vehicle_code, ts_now))
                     conn.commit()
-                    bug_logger.info(f'ENTRADA(S) SALVA(S) -> Area: {area}, Codigo: {vehicle_code}, Qtde: {delta_in}')
+                    bug_logger.info(f"ENTRADA(S) SALVA(S) -> Area: {area}, Codigo: {vehicle_code}, Qtde: {delta_in}")
                 except Exception as e:
-                    logger.error(f'Falha ao salvar ENTRADA em vehicle_counts (Area: {area}, Codigo: {vehicle_code}): {e}')
+                    logger.error(f"Falha ao salvar ENTRADA em vehicle_counts (Area: {area}, Codigo: {vehicle_code}): {e}")
 
-                state['in'] = count_in
-                bug_logger.info(f'ENTRADA AUTORIZADA -> Area: {area}, Codigo: {vehicle_code}')
-            else:
-                state['in'] = count_in
+                previous_counts.setdefault(area, {}).setdefault(vehicle_code, {})['in'] = count_in
+                bug_logger.info(f"ENTRADA AUTORIZADA -> Area: {area}, Codigo: {vehicle_code} - veiculos na area podem ter tempo")
 
-            if count_out > prev_out:
-                delta_out = count_out - prev_out
+            if previous_counts.get(area, {}).get(vehicle_code, {}).get('out', 0) < count_out:
+                prev_out = previous_counts.get(area, {}).get(vehicle_code, {}).get('out', 0)
+                delta_out = max(0, count_out - prev_out)
 
+                # Inserir um registro por incremento detectado de SAÍDA (sem tempo ainda)
                 try:
                     insert_exit = (
                         """INSERT INTO vehicle_counts (area, vehicle_code, count_in, count_out, timestamp, tempo_permanencia, enviado)
@@ -281,13 +280,12 @@ def save_counts_to_db(area_counts, cursor, conn, previous_counts, config, im0, t
                         ts_now = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
                         safe_execute(cursor, insert_exit, (area, vehicle_code, ts_now))
                     conn.commit()
-                    bug_logger.info(f'SAIDA(S) SALVA(S) -> Area: {area}, Codigo: {vehicle_code}, Qtde: {delta_out}')
+                    bug_logger.info(f"SAIDA(S) SALVA(S) -> Area: {area}, Codigo: {vehicle_code}, Qtde: {delta_out}")
                 except Exception as e:
-                    logger.error(f'Falha ao salvar SAIDA em vehicle_counts (Area: {area}, Codigo: {vehicle_code}): {e}')
+                    logger.error(f"Falha ao salvar SAIDA em vehicle_counts (Area: {area}, Codigo: {vehicle_code}): {e}")
 
-                state['out'] = count_out
-            else:
-                state['out'] = count_out
+                previous_counts.setdefault(area, {}).setdefault(vehicle_code, {})['out'] = count_out  
+                bug_logger.info(f"SAIDA detectada -> Area: {area}, Codigo: {vehicle_code} - aguardando processamento do tracker para tempo")
 
 # FUNÇÃO DESATIVADA - Agora apenas o permanence_tracker salva na vehicle_counts
 # Isso garante regra 1:1 sem duplicações
@@ -402,9 +400,8 @@ vehicles_crossed_line = {}  # Formato: {track_id: {"vehicle_code": vehicle_code,
 # Inicializa o banco de dados
 # Inicializa o banco de dados com o caminho fornecido
 conn, cursor = init_db(args.db_path)
-# CORREÇÃO 1.2: Usar WAL (Write-Ahead Logging) ao invés de DELETE para melhor performance e menos locks
-cursor.execute('PRAGMA journal_mode=WAL;')
-logger.info(f"Banco de dados inicializado em {args.db_path} com WAL ativado.")
+cursor.execute('PRAGMA journal_mode=DELETE;')  # Ativa o modo WAL para gravação simultânea
+# logger.info(f"Banco de dados inicializado em {args.db_path} com WAL ativado.")
 
 # Variável para armazenar as últimas contagens
 previous_counts = {}
@@ -434,8 +431,7 @@ def desenhar_areas(im0, permanencia_areas):
 frame_count = 0
 
 # Fila para frames que serão gravados
-# CORREÇÃO 1.1: Queue com limite de 100 frames (~8s de buffer) para evitar pulos nos vídeos
-frame_queue = queue.Queue(maxsize=100)
+frame_queue = queue.Queue()
 
 # Função para a thread de gravação de vídeo
 def video_writer_thread(frame_queue):
@@ -560,19 +556,9 @@ while True:
         cap = read_video(args.video_path)
         continue
 
-    raw_frame_for_video = im0.copy() if args.save_video else None
-
     frame_count += 1
     if frame_count % frame_skip_interval != 0:
-        if args.save_video:
-            resized_frame = cv2.resize(raw_frame_for_video, (args.output_width, args.output_height))
-            frame_queue.put(resized_frame)
-            frames_written += 1
-            if frames_written >= frames_per_video:
-                video_writer, current_video_filepath = start_new_video_writer(args.output_width, args.output_height, effective_fps)
-                frame_queue.put(('change_writer', video_writer))
-                frames_written = 0
-        continue
+        continue  # Pular os frames que não precisam ser processados
 
     current_timestamp = datetime.now()
 
@@ -625,16 +611,13 @@ while True:
                         logger.warning(f"Track ID {track_id} não está dentro de nenhuma área válida. Pulando para o próximo veículo.")
                         continue  # Ignora esse veículo e passa para o próximo
                     
-                    # CORREÇÃO 2.1: Relaxar autorização (conservadora) - permite tempo de permanência mesmo sem crossing
-                    # Mantém o sistema de autorização para tracking, mas não descarta veículos não autorizados
-                    # Isso resolve o problema de contagens baixas causadas por veículos descartados
+                    # 🔐 VERIFICAÇÃO DE AUTORIZAÇÃO: Só processa se veículo estiver autorizado
                     center_position = (centro_x, centro_y)
                     is_authorized, fallback_vehicle_code = check_vehicle_authorization(track_id, area_detectada, center_position, current_timestamp)
-
+                    
                     if not is_authorized:
-                        # MUDANÇA: Ao invés de descartar, apenas loga e continua processando
-                        logger.info(f"Track ID {track_id} na {area_detectada} sem autorização formal - mas permitindo tempo de permanência")
-                        # NÃO descarta mais: permite que o veículo seja rastreado para permanência
+                        logger.warning(f"Track ID {track_id} na {area_detectada} NAO AUTORIZADO - nao cruzou linha. DESCARTADO!")
+                        continue  # Ignora veículo não autorizado
 
                     # Se a área ainda não foi inicializada no tracker, criamos ela
                     if area_detectada not in tracker.permanence_data:
@@ -713,13 +696,8 @@ while True:
     # Gravação de frames na thread
     if args.save_video:
         resized_im0 = cv2.resize(im0, (args.output_width, args.output_height))
-        try:
-            # CORREÇÃO 1.1b: put_nowait evita travamento se a fila estiver cheia
-            frame_queue.put_nowait(resized_im0)
-            frames_written += 1
-        except queue.Full:
-            # Se a fila estiver cheia, descarta o frame atual (melhor que travar)
-            logger.warning("Fila de gravação de vídeo cheia - frame descartado para evitar travamento")
+        frame_queue.put(resized_im0)
+        frames_written += 1
 
         if frames_written >= frames_per_video:
             video_writer, current_video_filepath = start_new_video_writer(args.output_width, args.output_height, effective_fps)
@@ -740,9 +718,3 @@ if args.save_video:
 cv2.destroyAllWindows()
 tracker.close()
 conn.close()
-
-
-
-
-
-

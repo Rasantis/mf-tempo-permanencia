@@ -59,8 +59,8 @@ def verificar_banco_dados():
         
         # Ver alguns registros recentes
         cursor.execute("""SELECT id, timestamp, vehicle_code, tempo_permanencia 
-                          FROM vehicle_permanence 
-                          ORDER BY id DESC LIMIT 3""")
+                          FROM vehicle_counts 
+                          WHERE count_out = 1 AND tempo_permanencia IS NOT NULL ORDER BY id DESC LIMIT 3""")
         
         registros = cursor.fetchall()
         print(f"Registros recentes no banco:")

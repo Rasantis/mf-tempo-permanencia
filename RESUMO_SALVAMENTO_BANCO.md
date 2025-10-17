@@ -35,18 +35,24 @@ VALUES ('area_1', 26057, 0, 1, '2024-01-15 14:30:00', 15.5, 0);
 
 ### **📍 ONDE ACONTECE O SALVAMENTO:**
 
-#### **Script Principal Atual: `yolo16_v4.py`**
+#### **Script Principal `yolo16_v4.py` – contagem (entradas/saídas)**
 ```python
-cursor.execute(
-    '''INSERT INTO vehicle_permanence 
-    (codigocliente, area, vehicle_code, timestamp, tempo_permanencia, enviado)
-    VALUES (?, ?, ?, ?, ?, 0)''',
-    (client_code, area_detectada, vehicle_code, current_timestamp.strftime('%Y-%m-%d %H:%M:%S'), tempo)
+insert_exit = (
+    """INSERT INTO vehicle_counts (area, vehicle_code, count_in, count_out, timestamp, tempo_permanencia, enviado)
+       VALUES (?, ?, 0, 1, ?, NULL, 0)"""
 )
 ```
-- **Linha 475-479**: yolo16_v4.py:475-479
+- **yolo16_v4.py:255-284** – registra entradas (`count_in=1`) e saídas sem tempo (`tempo_permanencia=NULL`) assim que a linha de contagem é cruzada.
 
-#### **PermanenceTracker: `permanence_tracker.py`**
+#### **PermanenceTracker: `permanence_tracker.py` – tempo de permanência**
+```python
+self.cursor.execute(
+    '''UPDATE vehicle_counts 
+       SET tempo_permanencia = ?, timestamp = ?, enviado = 0 
+       WHERE id = ?''',
+    (tempo_permanencia, timestamp_str, rec_id)
+)
+```
 ```python
 self.cursor.execute(
     '''INSERT INTO vehicle_counts (area, vehicle_code, count_in, count_out, timestamp, tempo_permanencia, enviado)
@@ -54,9 +60,10 @@ self.cursor.execute(
     (area_name, vehicle_code, timestamp_str, tempo_permanencia)
 )
 ```
+- **permanence_tracker.py:178-205** – prioriza atualizar a saída mais recente que ainda não tem `tempo_permanencia`; se não existir, insere um novo registro completo.
 
 #### **API/Envio:**
-- `api_tempopermanencia.py` agora lê de `vehicle_counts` (com `count_out=1` e `tempo_permanencia` preenchido) e marca `enviado=1` nesta tabela.
+- `api_tempopermanencia.py` lê `vehicle_counts` (com `count_out=1` e `tempo_permanencia` preenchido) e marca `enviado=1` nesta tabela.
 
 ### **🔗 RELACIONAMENTO COM CONTAGEM:**
 

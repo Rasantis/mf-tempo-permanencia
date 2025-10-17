@@ -72,14 +72,24 @@ Para verificar o status dos envios:
 
 ```sql
 -- Total de registros pendentes
-SELECT COUNT(*) FROM vehicle_permanence WHERE enviado = 0;
+SELECT COUNT(*) 
+FROM vehicle_counts 
+WHERE enviado = 0 
+  AND count_out = 1 
+  AND tempo_permanencia IS NOT NULL;
 
 -- Total de registros enviados
-SELECT COUNT(*) FROM vehicle_permanence WHERE enviado = 1;
+SELECT COUNT(*) 
+FROM vehicle_counts 
+WHERE enviado = 1 
+  AND count_out = 1 
+  AND tempo_permanencia IS NOT NULL;
 
 -- Registros por status
 SELECT enviado, COUNT(*) as quantidade 
-FROM vehicle_permanence 
+FROM vehicle_counts 
+WHERE count_out = 1 
+  AND tempo_permanencia IS NOT NULL
 GROUP BY enviado;
 ```
 

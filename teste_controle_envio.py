@@ -100,7 +100,7 @@ def verificar_estrutura():
     conn = sqlite3.connect(TEST_DB)
     cursor = conn.cursor()
     
-    cursor.execute("PRAGMA table_info(vehicle_permanence)")
+    cursor.execute("PRAGMA table_info(vehicle_counts)")
     columns = cursor.fetchall()
     conn.close()
     

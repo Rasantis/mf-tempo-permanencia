@@ -163,12 +163,18 @@ Com base nos testes e análises realizadas, as **prováveis causas** das diferen
 ### **FASE 4: MONITORAMENTO**
 1. **Verifique registros pendentes:**
    ```sql
-   SELECT COUNT(*) FROM vehicle_permanence WHERE enviado = 0;
+   SELECT COUNT(*) FROM vehicle_counts
+   WHERE count_out = 1
+     AND tempo_permanencia IS NOT NULL
+     AND enviado = 0;
    ```
 
 2. **Monitore envios:**
    ```sql
-   SELECT enviado, COUNT(*) FROM vehicle_permanence GROUP BY enviado;
+   SELECT enviado, COUNT(*) FROM vehicle_counts
+   WHERE count_out = 1
+     AND tempo_permanencia IS NOT NULL
+   GROUP BY enviado;
    ```
 
 3. **Execute diagnóstico periodicamente** para detectar novos problemas
