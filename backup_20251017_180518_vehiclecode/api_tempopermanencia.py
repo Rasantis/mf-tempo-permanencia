@@ -54,17 +54,13 @@ def buscar_dados():
         conn.commit()
         logging.info("Coluna 'enviado' adicionada à tabela 'vehicle_counts'.")
 
-    # CORREÇÃO: Filtrar vehicle_code=-1 para evitar envio de dados inválidos
-    # Registros com -1 são erros de mapeamento e não devem ser enviados para API
+    # Buscar apenas registros de saída com tempo e não enviados
     query = (
         "SELECT id, timestamp, vehicle_code, tempo_permanencia "
         "FROM vehicle_counts "
-        "WHERE enviado = 0 "
-        "AND tempo_permanencia IS NOT NULL "
-        "AND vehicle_code != -1 "
+        "WHERE enviado = 0 AND tempo_permanencia IS NOT NULL "
         "ORDER BY timestamp"
     )
-    logging.info("Buscando registros válidos (excluindo vehicle_code=-1)")
     cursor.execute(query)
     rows = cursor.fetchall()
     conn.close()

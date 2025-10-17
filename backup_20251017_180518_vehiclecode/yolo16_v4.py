@@ -230,33 +230,11 @@ def save_counts_to_db(area_counts, cursor, conn, previous_counts, config, im0, t
 
         for vehicle_type, type_counts in counts['types'].items():
             faixa_config = config['cameras']['camera1']['faixas'].get(faixa, {})
-
-            # 🔧 CORREÇÃO: Melhor mapeamento com múltiplas variações
-            type_variations = [
-                vehicle_type,                              # Original
-                vehicle_type.rstrip('s'),                  # Sem 's' final
-                vehicle_type + 's',                        # Com 's' final
-                vehicle_type.replace('cycle', 'cycles'),   # Plural irregular
-                vehicle_type.replace('cycles', 'cycle')    # Singular irregular
-            ]
-
-            vehicle_code = None
-            for variation in type_variations:
-                vehicle_code = faixa_config.get(variation)
-                if vehicle_code is not None:
-                    if variation != vehicle_type:
-                        bug_logger.info(f"✅ Mapeamento counts: '{vehicle_type}' → '{variation}' = {vehicle_code}")
-                    break
-
+            vehicle_code = faixa_config.get(vehicle_type)
+            if not vehicle_code and vehicle_type.endswith('s'):
+                vehicle_code = faixa_config.get(vehicle_type[:-1])
             if not vehicle_code:
                 logger.warning(f'Codigo de veiculo nao encontrado para {vehicle_type} na faixa {faixa}')
-                bug_logger.error(
-                    f"CODIGO NAO ENCONTRADO em save_counts_to_db | "
-                    f"Vehicle Type: '{vehicle_type}' | "
-                    f"Faixa: {faixa} | "
-                    f"Variações testadas: {type_variations} | "
-                    f"Config disponível: {list(faixa_config.keys())}"
-                )
                 continue
 
             count_in = type_counts['in']
@@ -566,39 +544,15 @@ def handle_lost_vehicle(track_id, area, vehicle_code, position, timestamp):
 def get_vehicle_code(area_detectada, class_name, config):
     """
     Retorna o código do veículo baseado na área detectada e na classe.
-    🔧 CORREÇÃO: Suporta múltiplas variações de plural/singular.
     """
     faixa_map = {"area_1": "faixa1", "area_2": "faixa2"}
     faixa_detectada = faixa_map.get(area_detectada, None)
-
+    
     if faixa_detectada:
-        faixa_config = config["cameras"]["camera1"]["faixas"].get(faixa_detectada, {})
+        vehicle_code = config["cameras"]["camera1"]["faixas"].get(faixa_detectada, {}).get(class_name, None)
+        if vehicle_code is not None:
+            return vehicle_code
 
-        # 🔧 CORREÇÃO: Tentar múltiplas variações
-        class_variations = [
-            class_name,                              # Original
-            class_name.rstrip('s'),                  # Sem 's' final
-            class_name + 's',                        # Com 's' final
-            class_name.replace('cycle', 'cycles'),   # Plural irregular
-            class_name.replace('cycles', 'cycle')    # Singular irregular
-        ]
-
-        for variation in class_variations:
-            vehicle_code = faixa_config.get(variation)
-            if vehicle_code is not None:
-                if variation != class_name:
-                    bug_logger.info(f"✅ Mapeamento get_vehicle_code: '{class_name}' → '{variation}' = {vehicle_code}")
-                return vehicle_code
-
-    # Se não encontrou nenhuma variação
-    config_keys = list(config["cameras"]["camera1"]["faixas"].get(faixa_detectada, {}).keys()) if faixa_detectada else []
-    bug_logger.error(
-        f"VEHICLE_CODE=-1 em get_vehicle_code | "
-        f"Class: '{class_name}' | "
-        f"Area: {area_detectada} | "
-        f"Faixa: {faixa_detectada} | "
-        f"Config disponível: {config_keys}"
-    )
     print(f"Código do veículo não encontrado para '{class_name}' na área '{area_detectada}' (faixa: {faixa_detectada}). Usando -1.")
     return -1  # Retorna -1 caso não seja encontrado
 
@@ -706,42 +660,11 @@ while True:
                         faixa_detectada = faixa_map.get(area_detectada)
 
                         if faixa_detectada:
-                            # 🔧 CORREÇÃO: Tentar múltiplas variações de plural/singular
-                            faixa_config = config["cameras"]["camera1"]["faixas"].get(faixa_detectada, {})
-
-                            # Lista de variações para testar (ordem de prioridade)
-                            class_variations = [
-                                class_name,                              # Original (ex: "cars")
-                                class_name.rstrip('s'),                  # Sem 's' final (ex: "car")
-                                class_name + 's',                        # Com 's' final (ex: "motorcycles")
-                                class_name.replace('cycle', 'cycles'),   # Plural irregular (ex: "motorcycles")
-                                class_name.replace('cycles', 'cycle')    # Singular irregular (ex: "motorcycle")
-                            ]
-
-                            vehicle_code = None
-                            for variation in class_variations:
-                                vehicle_code = faixa_config.get(variation)
-                                if vehicle_code is not None:
-                                    if variation != class_name:
-                                        bug_logger.info(f"✅ Mapeamento encontrado: '{class_name}' → '{variation}' = {vehicle_code}")
-                                    break
+                            vehicle_code = config["cameras"]["camera1"]["faixas"].get(faixa_detectada, {}).get(class_name, None)
 
                         if vehicle_code is None:
                             logger.warning(f"Não foi possível mapear vehicle_code para {class_name} na {area_detectada} (faixa: {faixa_detectada})")
                             vehicle_code = -1  # Código de fallback para veículos sem correspondência
-
-                            # 🐛 CORREÇÃO: Log detalhado quando vehicle_code=-1 for atribuído
-                            config_keys = list(config['cameras']['camera1']['faixas'].get(faixa_detectada, {}).keys())
-                            bug_logger.error(
-                                f"VEHICLE_CODE=-1 DETECTADO! | "
-                                f"Track: {track_id} | "
-                                f"Area: {area_detectada} | "
-                                f"Faixa: {faixa_detectada} | "
-                                f"Class YOLO: '{class_name}' | "
-                                f"Variações testadas: {class_variations} | "
-                                f"Config disponível: {config_keys} | "
-                                f"CAUSA: Nenhuma variação da classe YOLO encontrada no mapeamento"
-                            )
 
                         tracker.permanence_data[area_detectada]['vehicle_codes'][track_id] = vehicle_code
                         logger.info(f"Veículo {track_id} identificado como {class_name} na {area_detectada} com código {vehicle_code}.")
