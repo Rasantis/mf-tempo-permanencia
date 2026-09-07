@@ -56,3 +56,7 @@ build/
 *.onnx
 *.h5
 *.pb
+
+# Bytecode do Python (estava versionado por engano)
+__pycache__/
+*.py[cod]
