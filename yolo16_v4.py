@@ -14,6 +14,7 @@ from shapely.geometry import Polygon, Point
 import numpy as np
 import threading  # Importar threading
 import queue  # Importar queue para comunicar entre as threads
+from collections import deque
 from permanence_tracker import PermanenceTracker
 from label_manager import draw_labels
 
@@ -228,7 +229,6 @@ effective_fps = fps / frame_skip_interval
 
 # Definir o intervalo em segundos e calcular frames por vídeo
 video_interval_in_seconds = args.video_interval * 60  # Converter minutos para segundos
-frames_per_video = int(effective_fps * video_interval_in_seconds)
 
 # Carregar configurações
 config = load_config(args.config_path)
@@ -300,6 +300,7 @@ def desenhar_areas(im0, permanencia_areas):
 
 # Função principal
 frame_count = 0
+commit_counter = 0  # Contador para batch commits
 
 # Fila para frames que serão gravados
 frame_queue = queue.Queue()
@@ -325,20 +326,23 @@ def video_writer_thread(frame_queue):
     if current_video_writer is not None:
         current_video_writer.release()
 
-# Inicializa o primeiro gravador de vídeo e inicializa o contador de frames escritos
+video_thread = None
 if args.save_video:
-    video_writer, current_video_filepath = start_new_video_writer(args.output_width, args.output_height, effective_fps)
-    # Definir o intervalo em segundos e calcular frames por vídeo
-    video_interval_in_seconds = args.video_interval * 60  # Converter minutos para segundos
-    frames_per_video = int(effective_fps * video_interval_in_seconds)
-    frames_written = 0  # Inicializar o contador de frames escritos
-
     # Inicia a thread de gravação
     video_thread = threading.Thread(target=video_writer_thread, args=(frame_queue,))
     video_thread.start()
 
-    # Envia o video_writer inicial para a thread
-    frame_queue.put(('change_writer', video_writer))
+    frame_intervals = deque(maxlen=120)
+    pending_frames = []
+    last_video_frame_time = None
+    current_video_fps = None
+    video_segment_start = None
+else:
+    frame_intervals = None
+    pending_frames = None
+    last_video_frame_time = None
+    current_video_fps = None
+    video_segment_start = None
 
 def get_vehicle_code(area_detectada, class_name, config):
     """
@@ -500,13 +504,52 @@ while True:
     # Gravação de frames na thread
     if args.save_video:
         resized_im0 = cv2.resize(im0, (args.output_width, args.output_height))
-        frame_queue.put(resized_im0)
-        frames_written += 1
+        current_time = time.time()
 
-        if frames_written >= frames_per_video:
-            video_writer, current_video_filepath = start_new_video_writer(args.output_width, args.output_height, effective_fps)
-            frame_queue.put(('change_writer', video_writer))
-            frames_written = 0
+        if last_video_frame_time is not None:
+            frame_intervals.append(max(current_time - last_video_frame_time, 1e-6))
+        last_video_frame_time = current_time
+
+        if current_video_fps is None:
+            pending_frames.append(resized_im0)
+
+            if len(frame_intervals) >= 5:
+                avg_interval = sum(frame_intervals) / len(frame_intervals)
+                estimated_fps = 1.0 / max(avg_interval, 1e-6)
+                estimated_fps = min(fps, max(0.5, estimated_fps))
+
+                current_video_fps = estimated_fps
+                logger.info(f"Iniciando gravação de vídeo com FPS estimado em {current_video_fps:.2f}")
+
+                video_writer, current_video_filepath = start_new_video_writer(
+                    args.output_width, args.output_height, current_video_fps
+                )
+                frame_queue.put(('change_writer', video_writer))
+                video_segment_start = current_time
+
+                for frame in pending_frames:
+                    frame_queue.put(frame)
+                pending_frames.clear()
+        else:
+            frame_queue.put(resized_im0)
+
+            if video_segment_start is not None and (current_time - video_segment_start) >= video_interval_in_seconds:
+                if frame_intervals:
+                    avg_interval = sum(frame_intervals) / len(frame_intervals)
+                    updated_fps = 1.0 / max(avg_interval, 1e-6)
+                    updated_fps = min(fps, max(0.5, updated_fps))
+                else:
+                    updated_fps = current_video_fps
+
+                if abs(updated_fps - current_video_fps) >= 0.1:
+                    logger.info(f"Ajustando FPS de gravação de {current_video_fps:.2f} para {updated_fps:.2f}")
+                    current_video_fps = updated_fps
+
+                new_video_writer, current_video_filepath = start_new_video_writer(
+                    args.output_width, args.output_height, current_video_fps
+                )
+                frame_queue.put(('change_writer', new_video_writer))
+                video_segment_start = current_time
 
     # Mostrar frame
     cv2.imshow('YOLOv8 Object Counter', im0)
@@ -516,8 +559,28 @@ while True:
 
 cap.release()
 if args.save_video:
+    if current_video_fps is None and pending_frames:
+        if frame_intervals:
+            avg_interval = sum(frame_intervals) / len(frame_intervals)
+            fallback_fps = 1.0 / max(avg_interval, 1e-6)
+        else:
+            fallback_fps = effective_fps
+        fallback_fps = min(fps, max(0.5, fallback_fps))
+        logger.info(f"Finalizando gravação pendente com FPS estimado em {fallback_fps:.2f}")
+
+        video_writer, current_video_filepath = start_new_video_writer(
+            args.output_width, args.output_height, fallback_fps
+        )
+        frame_queue.put(('change_writer', video_writer))
+        video_segment_start = time.time()
+
+        for frame in pending_frames:
+            frame_queue.put(frame)
+        pending_frames.clear()
+
     frame_queue.put(None)
-    video_thread.join()
+    if video_thread is not None:
+        video_thread.join()
 
 cv2.destroyAllWindows()
 tracker.close()
